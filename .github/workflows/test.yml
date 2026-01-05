@@ -28,12 +28,20 @@ jobs:
     
     - name: Run tests (excluding examples)
       run: |
-        PACKAGES=$(go list ./... | grep -v '/examples/')
-        echo "Testing packages: $PACKAGES"
+        PACKAGES=$(go list ./... | grep -v '/examples/' || echo "")
+        if [ -z "$PACKAGES" ]; then
+          echo "No packages to test"
+          exit 1
+        fi
+        echo "Testing packages:"
+        echo "$PACKAGES"
         go test -v -race -coverprofile=coverage.out $PACKAGES
     
     - name: Check test coverage
       if: success()
       run: |
-        go tool cover -func=coverage.out | tail -1
-
+        if [ -f coverage.out ]; then
+          go tool cover -func=coverage.out | tail -1
+        else
+          echo "No coverage file generated"
+        fi
