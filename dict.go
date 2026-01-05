@@ -3,6 +3,7 @@ package dict
 import (
 	"reflect"
 	"strings"
+	"sync"
 )
 
 // DictManager 字典管理器
@@ -11,6 +12,7 @@ type DictManager struct {
 	translators map[string]Translator          // 自定义翻译器: tagName -> Translator
 	unwrappers  []UnWrapper                    // 包装类型解包器
 	configCache map[reflect.Type]*structConfig // 配置缓存
+	configMutex sync.RWMutex                   // 配置缓存互斥锁
 }
 
 var defaultManager = &DictManager{
@@ -144,8 +146,21 @@ func (dm *DictManager) translateStruct(rv reflect.Value) error {
 	return nil
 }
 
-// getOrCreateConfig 获取或创建配置缓存
+// getOrCreateConfig 获取或创建配置缓存（线程安全）
 func (dm *DictManager) getOrCreateConfig(rt reflect.Type) *structConfig {
+	// 先尝试读锁获取
+	dm.configMutex.RLock()
+	if config, ok := dm.configCache[rt]; ok {
+		dm.configMutex.RUnlock()
+		return config
+	}
+	dm.configMutex.RUnlock()
+
+	// 需要创建配置，使用写锁
+	dm.configMutex.Lock()
+	defer dm.configMutex.Unlock()
+
+	// 双重检查，防止并发创建
 	if config, ok := dm.configCache[rt]; ok {
 		return config
 	}
