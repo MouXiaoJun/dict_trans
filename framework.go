@@ -3,6 +3,7 @@ package dict
 import (
 	"fmt"
 	"reflect"
+	"sync"
 )
 
 // Framework 翻译框架主入口
@@ -28,6 +29,7 @@ func NewFramework(config *Config) *Framework {
 			translators: make(map[string]Translator),
 			unwrappers:  make([]UnWrapper, 0),
 			configCache: make(map[reflect.Type]*structConfig),
+			configMutex: sync.RWMutex{},
 		},
 		optimizer:  NewBatchQueryOptimizer(),
 		preloader:  NewPreloadManager(),
