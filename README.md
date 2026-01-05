@@ -175,6 +175,8 @@ CREATE TABLE sys_dict (
 
 从两张表读取数据，字典类型表和字典数据表分离，更符合数据库规范化设计。
 
+#### 使用默认表结构
+
 ```go
 import (
     "database/sql"
@@ -204,7 +206,44 @@ dict.EnableDictTableTwoCache(true)  // 默认启用
 dict.ClearDictTableTwoCache()       // 清空缓存
 ```
 
-**双表字典结构：**
+#### 自定义双表结构 ⭐
+
+```go
+// 自定义字典类型表配置
+typeConfig := &dict.TableConfig{
+    TableName: "dict_category",
+    Fields: dict.TableFields{
+        TypeField:  "category_code",
+        ValueField: "category_name",
+    },
+    StatusField: &dict.StatusFieldConfig{
+        FieldName:     "enabled",
+        EnabledValue:  "1",
+        DisabledValue: "0",
+    },
+}
+
+// 自定义字典数据表配置
+dataConfig := &dict.TableConfig{
+    TableName: "dict_item",
+    Fields: dict.TableFields{
+        TypeField:  "category_code",
+        KeyField:   "item_code",
+        ValueField: "item_name",
+    },
+    StatusField: &dict.StatusFieldConfig{
+        FieldName:     "enabled",
+        EnabledValue:  "1",
+        DisabledValue: "0",
+    },
+}
+
+// 使用自定义配置创建翻译器
+translator := dict.CreateDictTableTwoTranslatorFromDBWithConfig(db, typeConfig, dataConfig)
+dict.RegisterDictTableTwoTranslator(translator)
+```
+
+**默认双表字典结构：**
 ```sql
 -- 字典类型表
 CREATE TABLE sys_dict_type (
@@ -222,6 +261,41 @@ CREATE TABLE sys_dict_data (
   status CHAR(1) DEFAULT '1' COMMENT '状态：1-启用，0-禁用',
   PRIMARY KEY (dict_type_code, dict_key)
 );
+```
+
+**自定义双表结构示例：**
+```go
+// 自定义字典类型表配置
+typeConfig := &dict.TableConfig{
+    TableName: "dict_category",
+    Fields: dict.TableFields{
+        TypeField:  "category_code",
+        ValueField: "category_name",
+    },
+    StatusField: &dict.StatusFieldConfig{
+        FieldName:     "enabled",
+        EnabledValue:  "1",
+        DisabledValue: "0",
+    },
+}
+
+// 自定义字典数据表配置
+dataConfig := &dict.TableConfig{
+    TableName: "dict_item",
+    Fields: dict.TableFields{
+        TypeField:  "category_code",
+        KeyField:   "item_code",
+        ValueField: "item_name",
+    },
+    StatusField: &dict.StatusFieldConfig{
+        FieldName:     "enabled",
+        EnabledValue:  "1",
+        DisabledValue: "0",
+    },
+}
+
+translator := dict.CreateDictTableTwoTranslatorFromDBWithConfig(db, typeConfig, dataConfig)
+dict.RegisterDictTableTwoTranslator(translator)
 ```
 
 **双表字典的优势：**

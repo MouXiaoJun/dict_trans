@@ -97,21 +97,22 @@ func createDictTableTranslator(dictType string) Translator {
 }
 
 // CreateDictTableTranslatorFromDB 从数据库连接创建字典表翻译器
-// 适用于标准的字典表结构：
-//   - dict_type: 字典类型字段
-//   - dict_key: 字典键字段
-//   - dict_value: 字典值字段
-//   - table_name: 字典表名（默认 "sys_dict"）
+// 适用于标准的字典表结构：dict_type, dict_key, dict_value, status
+// 如果需要自定义表结构，请使用 CreateDictTableTranslatorFromDBWithConfig
 func CreateDictTableTranslatorFromDB(db *sql.DB, tableName string) DictTableTranslator {
-	if tableName == "" {
-		tableName = "sys_dict"
+	return CreateDictTableTranslatorFromDBWithConfig(db, DefaultTableConfig(tableName))
+}
+
+// CreateDictTableTranslatorFromDBWithConfig 从数据库连接创建字典表翻译器（支持自定义表结构）
+func CreateDictTableTranslatorFromDBWithConfig(db *sql.DB, config *TableConfig) DictTableTranslator {
+	if config == nil {
+		config = DefaultTableConfig("sys_dict")
 	}
 
 	return DictTableTranslatorFunc(func(dictType, dictKey string) (string, error) {
-		query := fmt.Sprintf("SELECT dict_value FROM %s WHERE dict_type = ? AND dict_key = ? AND status = '1'", tableName)
-
+		query, args := config.BuildQueryWithKey(dictType, dictKey)
 		var result string
-		err := db.QueryRow(query, dictType, dictKey).Scan(&result)
+		err := db.QueryRow(query, args...).Scan(&result)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return "", nil // 未找到记录，返回空字符串
