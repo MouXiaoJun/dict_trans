@@ -29,11 +29,12 @@ type structConfig struct {
 
 // fieldConfig 字段配置
 type fieldConfig struct {
-	fieldIndex    int
-	sourceField   string
-	targetField   string
-	translatorTag string
-	translator    Translator
+	fieldIndex       int
+	sourceField      string
+	targetField      string
+	targetFieldIndex int // 缓存目标字段索引，避免每次查找
+	translatorTag    string
+	translator       Translator
 }
 
 // RegisterDict 注册字典
@@ -182,8 +183,9 @@ func (dm *DictManager) getOrCreateConfig(rt reflect.Type) *structConfig {
 		dictFieldTag := fieldType.Tag.Get("dictField")
 
 		fieldCfg := fieldConfig{
-			fieldIndex:  i,
-			targetField: dictFieldTag,
+			fieldIndex:       i,
+			targetField:      dictFieldTag,
+			targetFieldIndex: -1, // 初始化为 -1，表示未找到
 		}
 
 		// 优先级: translate > db > dictTableTwo > dictTable > enum > dict
@@ -223,6 +225,16 @@ func (dm *DictManager) getOrCreateConfig(rt reflect.Type) *structConfig {
 		}
 
 		if fieldCfg.translator != nil || fieldCfg.translatorTag != "" {
+			// 查找并缓存目标字段索引，避免运行时查找
+			if fieldCfg.targetField != "" {
+				for j := 0; j < rt.NumField(); j++ {
+					structField := rt.Field(j)
+					if structField.Name == fieldCfg.targetField || strings.EqualFold(structField.Name, fieldCfg.targetField) {
+						fieldCfg.targetFieldIndex = j
+						break
+					}
+				}
+			}
 			config.fields = append(config.fields, fieldCfg)
 		}
 	}
@@ -331,6 +343,16 @@ func (dm *DictManager) translateFieldWithTranslator(field reflect.Value, fieldTy
 		return nil
 	}
 
+	// 优先使用缓存的字段索引（O(1)），否则回退到遍历查找（O(n)）
+	if fieldCfg.targetFieldIndex >= 0 {
+		targetField := structValue.Field(fieldCfg.targetFieldIndex)
+		if targetField.CanSet() && targetField.Kind() == reflect.String {
+			targetField.SetString(translatedValue)
+			return nil
+		}
+	}
+
+	// 回退到遍历查找（兼容旧代码或字段索引未找到的情况）
 	structType := structValue.Type()
 	for i := 0; i < structType.NumField(); i++ {
 		structField := structType.Field(i)
