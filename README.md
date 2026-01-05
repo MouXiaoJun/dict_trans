@@ -1,5 +1,10 @@
 # dict-trans
 
+[![Go Version](https://img.shields.io/badge/go-1.21+-00ADD8?style=flat-square&logo=go)](https://golang.org)
+[![License](https://img.shields.io/badge/license-MulanPSL--2.0-green.svg?style=flat-square)](LICENSE)
+[![GitHub release](https://img.shields.io/github/release/MouXiaoJun/dict_trans.svg?style=flat-square)](https://github.com/MouXiaoJun/dict_trans/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/MouXiaoJun/dict_trans?style=flat-square)](https://goreportcard.com/report/github.com/MouXiaoJun/dict_trans)
+
 一个**高效率、高扩展性、高自定义**的 Go 语言翻译框架，支持字典翻译、数据脱敏、嵌套翻译等功能。
 
 > 🚀 **高性能翻译框架**：批量查询优化、预加载机制、智能缓存、并行处理、性能监控
