@@ -101,18 +101,27 @@ func createDictTableTwoTranslator(dictTypeCode string) Translator {
 //   - dict_type 表：存储字典类型（dict_type_code, dict_type_name）
 //   - dict_data 表：存储字典数据（dict_type_code, dict_key, dict_value）
 func CreateDictTableTwoTranslatorFromDB(db *sql.DB, dictTypeTable, dictDataTable string) DictTableTwoTranslator {
-	if dictTypeTable == "" {
-		dictTypeTable = "sys_dict_type"
+	return CreateDictTableTwoTranslatorFromDBWithConfig(
+		db,
+		DefaultDictTypeTableConfig(dictTypeTable),
+		DefaultDictDataTableConfig(dictDataTable),
+	)
+}
+
+// CreateDictTableTwoTranslatorFromDBWithConfig 从数据库连接创建双表字典翻译器（支持自定义表结构）
+func CreateDictTableTwoTranslatorFromDBWithConfig(db *sql.DB, typeConfig, dataConfig *TableConfig) DictTableTwoTranslator {
+	if typeConfig == nil {
+		typeConfig = DefaultDictTypeTableConfig("sys_dict_type")
 	}
-	if dictDataTable == "" {
-		dictDataTable = "sys_dict_data"
+	if dataConfig == nil {
+		dataConfig = DefaultDictDataTableConfig("sys_dict_data")
 	}
 
 	return DictTableTwoTranslatorFunc(func(dictTypeCode, dictKey string) (string, error) {
 		// 先验证字典类型是否存在且启用
-		typeQuery := fmt.Sprintf("SELECT COUNT(1) FROM %s WHERE dict_type_code = ? AND status = '1'", dictTypeTable)
+		typeQuery, typeArgs := typeConfig.BuildTypeCheckQuery(dictTypeCode)
 		var typeCount int
-		err := db.QueryRow(typeQuery, dictTypeCode).Scan(&typeCount)
+		err := db.QueryRow(typeQuery, typeArgs...).Scan(&typeCount)
 		if err != nil {
 			return "", fmt.Errorf("查询字典类型失败: %v", err)
 		}
@@ -121,9 +130,9 @@ func CreateDictTableTwoTranslatorFromDB(db *sql.DB, dictTypeTable, dictDataTable
 		}
 
 		// 查询字典数据
-		dataQuery := fmt.Sprintf("SELECT dict_value FROM %s WHERE dict_type_code = ? AND dict_key = ? AND status = '1'", dictDataTable)
+		dataQuery, dataArgs := dataConfig.BuildQueryWithKey(dictTypeCode, dictKey)
 		var result string
-		err = db.QueryRow(dataQuery, dictTypeCode, dictKey).Scan(&result)
+		err = db.QueryRow(dataQuery, dataArgs...).Scan(&result)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return "", nil // 未找到记录，返回空字符串
