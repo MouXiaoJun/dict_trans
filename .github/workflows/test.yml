@@ -43,6 +43,9 @@ jobs:
         echo "$PACKAGES"
         go test -v -race -coverprofile=coverage.out $PACKAGES
     
+    - name: Fuzz (short)
+      run: go test -run xxx -fuzz FuzzParseDBTag -fuzztime 10s ./
+
     - name: Check test coverage
       if: success()
       run: |
