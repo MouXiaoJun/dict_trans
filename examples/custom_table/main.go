@@ -4,16 +4,20 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
 
+	"github.com/MouXiaoJun/dict_trans"
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/mouxiaojun/dict-trans"
 )
 
 func main() {
-	fmt.Println("=== 自定义表结构示例 ===\n")
+	fmt.Printf("=== 自定义表结构示例 ===\n\n")
 
 	// 连接 MySQL 数据库
-	dsn := "root:MSms0427@tcp(127.0.0.1:3306)/dict_trans?charset=utf8mb4&parseTime=True&loc=Local"
+	dsn := os.Getenv("DICT_TRANS_DSN") // 例：root:password@tcp(127.0.0.1:3306)/dict_trans?charset=utf8mb4&parseTime=True&loc=Local
+	if dsn == "" {
+		dsn = "root:password@tcp(127.0.0.1:3306)/dict_trans?charset=utf8mb4&parseTime=True&loc=Local"
+	}
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		log.Fatalf("连接数据库失败: %v", err)
@@ -24,7 +28,7 @@ func main() {
 	if err := db.Ping(); err != nil {
 		log.Fatalf("数据库连接测试失败: %v\n请确保:\n1. MySQL 服务已启动\n2. 数据库 dict_trans 已创建", err)
 	}
-	fmt.Println("✓ 数据库连接成功\n")
+	fmt.Printf("✓ 数据库连接成功\n\n")
 
 	// ========== 示例1: 使用默认表结构 ==========
 	fmt.Println("【示例1】使用默认表结构")
