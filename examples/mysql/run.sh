@@ -7,7 +7,7 @@ echo ""
 
 # 检查 MySQL 连接
 echo "1. 检查 MySQL 连接..."
-mysql -u root -pMSms0427 -h 127.0.0.1 -e "SELECT 1" > /dev/null 2>&1
+mysql -u "${MYSQL_USER:-root}" -p"${MYSQL_PASSWORD:?请先 export MYSQL_PASSWORD}" -h "${MYSQL_HOST:-127.0.0.1}" -e "SELECT 1" > /dev/null 2>&1
 if [ $? -ne 0 ]; then
     echo "❌ MySQL 连接失败，请检查："
     echo "   - MySQL 服务是否启动"
@@ -19,7 +19,7 @@ echo ""
 
 # 创建数据库和表
 echo "2. 初始化数据库..."
-mysql -u root -pMSms0427 -h 127.0.0.1 < setup.sql > /dev/null 2>&1
+mysql -u "${MYSQL_USER:-root}" -p"${MYSQL_PASSWORD:?请先 export MYSQL_PASSWORD}" -h "${MYSQL_HOST:-127.0.0.1}" < setup.sql > /dev/null 2>&1
 if [ $? -ne 0 ]; then
     echo "❌ 数据库初始化失败"
     exit 1
@@ -40,5 +40,6 @@ echo ""
 # 运行示例
 echo "4. 运行示例..."
 echo ""
-go run main.go
+export DICT_TRANS_DSN="${MYSQL_USER:-root}:${MYSQL_PASSWORD}@tcp(${MYSQL_HOST:-127.0.0.1}:3306)/dict_trans?charset=utf8mb4&parseTime=True&loc=Local"
+go run ./basic
 

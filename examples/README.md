@@ -68,7 +68,7 @@ go run main.go
 - 主机: 127.0.0.1
 - 端口: 3306
 - 用户名: root
-- 密码: MSms0427
+- 密码: 通过环境变量 `MYSQL_PASSWORD` / `DICT_TRANS_DSN` 传入，示例代码不含真实密码
 - 数据库: dict_trans
 
 **前置要求：**
@@ -87,7 +87,7 @@ cd examples/mysql
 ```bash
 cd examples/mysql
 # 1. 初始化数据库
-mysql -u root -pMSms0427 < setup.sql
+mysql -u root -p < setup.sql
 # 2. 安装依赖
 go mod tidy
 # 3. 运行示例
@@ -143,7 +143,7 @@ package main
 
 import (
     "fmt"
-    "github.com/mouxiaojun/dict-trans"
+    "github.com/MouXiaoJun/dict_trans"
 )
 
 func main() {

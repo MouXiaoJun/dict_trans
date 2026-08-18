@@ -15,7 +15,7 @@
 - 主机: 127.0.0.1
 - 端口: 3306
 - 用户名: root
-- 密码: MSms0427
+- 密码: 通过环境变量 `MYSQL_PASSWORD` / `DICT_TRANS_DSN` 传入，示例代码不含真实密码
 - 数据库: dict_trans
 
 ## 使用步骤
@@ -23,7 +23,7 @@
 ### 1. 创建数据库和表
 
 ```bash
-mysql -u root -pMSms0427 < setup.sql
+mysql -u root -p < setup.sql
 ```
 
 或者手动执行 SQL：
@@ -38,7 +38,7 @@ USE dict_trans;
 
 ```bash
 cd examples/mysql
-go run main.go
+go run ./basic
 ```
 
 ## 示例说明
@@ -66,24 +66,24 @@ go run main.go
 
 1. **创建字典表**（运行 dict_table.sql）：
    ```bash
-   mysql -u root -pMSms0427 < dict_table.sql
+   mysql -u root -p < dict_table.sql
    ```
 
 2. **运行单表字典示例**：
    ```bash
-   go run dict_table_example.go
+   go run ./dict_table
    ```
 
 ### 双表字典（dictTableTwo）⭐
 
 1. **创建双表字典**（运行 dict_table_two.sql）：
    ```bash
-   mysql -u root -pMSms0427 < dict_table_two.sql
+   mysql -u root -p < dict_table_two.sql
    ```
 
 2. **运行双表字典示例**：
    ```bash
-   go run dict_table_two_example.go
+   go run ./dict_table_two
    ```
 
 ## 单表字典 vs 双表字典
