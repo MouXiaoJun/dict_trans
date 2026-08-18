@@ -421,6 +421,26 @@ err := dict.TranslateWith(&rows,
 - Copy-on-Write：字典 / 翻译器 / 枚举注册表用 `atomic.Pointer`，读无锁
 - Registry / Facade（`Framework`）/ Chain of Responsibility（`Middleware`）/ Null Object（`noop` 配置、`emptyRegistry`）
 
+## 性能
+
+Apple M 系列，`go test -bench . -benchmem`（每次波动 ±20%）：
+
+| 基准 | v1.0.0 | v1.2.1 |
+| --- | --- | --- |
+| 单结构体，内存字典 | 939 ns/op · 4 次分配 | **175 ns/op · 1 次分配** |
+| 1000 元素切片，顺序 | 966 µs/op · 3000 次分配 | **205 µs/op · 0 次分配** |
+| 1000 元素切片，并行 | 291 µs/op | ~230 µs/op（并行只对 I/O 型翻译器划算）|
+| 嵌套结构体 | 1081 ns/op · 6 次分配 | **324 ns/op · 0 次分配** |
+
+怎么来的：按类型缓存配置并预算遍历步骤（只看嵌套或带标签的字段）、预先拆好 tag 名与目标字段下标、注册表用写时复制替代 RWMutex、惰性 visited 集防环、两阶段预取把 N 次 DB 往返变成每组一次 `IN`。自己剖析：
+
+```bash
+go test -run xxx -bench 'BenchmarkTranslateBatch$' -cpuprofile cpu.out -o dict.test ./
+go tool pprof -top -nodecount=20 dict.test cpu.out      # 或 -http=:8080 看火焰图
+```
+
+CI 在每个 PR 的 job summary 里贴 `benchstat` 对比（base vs head）；`go test -fuzz FuzzParseDBTag` 对 tag 解析做模糊测试。
+
 ## 并发与限制
 
 - `Translate` / `BatchTranslate` 可并发调用；`RegisterDict` / `RegisterEnum` / `RegisterTranslator` 也可以与翻译并发调用——注册表是写时复制（atomic.Pointer），读路径无锁，写会拷贝一份小 map，请在启动期完成注册。
