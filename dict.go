@@ -146,16 +146,35 @@ var defaultManager = NewDictManager()
 type structConfig struct {
 	fields    []fieldConfig
 	byIndex   []*fieldConfig // 按字段下标预建的索引，长度 = NumField，无配置处为 nil
+	steps     []fieldStep    // 翻译时真正要看的字段（嵌套 或 带翻译标签），普通字段不进循环
 	noop      bool           // 没有任何可设置字段（如 time.Time），翻译时直接跳过、不记 visited
 	mayLookup bool           // 自身有 DB 类翻译器，或有嵌套 struct/ptr/slice 字段（可能藏着）——决定批量前要不要走收集遍历
 }
 
-// fieldConfig 字段配置
+// fieldStep 一个字段在翻译遍历中的预算好的动作：nested 表示要递归进去（struct / *struct / slice），cfg 表示要翻译
+type fieldStep struct {
+	index  int
+	nested nestedKind
+	cfg    *fieldConfig
+}
+
+type nestedKind uint8
+
+const (
+	nestedNone nestedKind = iota
+	nestedStruct
+	nestedPtr
+	nestedSlice
+)
+
+// fieldConfig 字段配置（getOrCreateConfig 时一次算好，翻译热路径零解析）
 type fieldConfig struct {
 	fieldIndex       int
+	fieldName        string
 	targetField      string
-	targetFieldIndex int // 缓存目标字段索引，避免每次查找
-	translatorTag    string
+	targetFieldIndex int    // 缓存目标字段索引，避免每次查找
+	translatorTag    string // 原始 tag（传给翻译器）
+	dictName         string // dict 标签：逗号前的字典名，预先拆好
 	translator       Translator
 }
 
@@ -358,48 +377,39 @@ func (dm *DictManager) translateStructV(rv reflect.Value, seen *walk, viaPtr boo
 		}
 	}
 
-	// 遍历所有字段（不仅仅是配置中的字段，因为嵌套结构体可能没有翻译标签）
-	for i := 0; i < rt.NumField(); i++ {
-		field := rv.Field(i)
-		fieldType := rt.Field(i)
+	// 只走预算好的字段：嵌套的递归进去，带标签的翻译；普通字段根本不碰
+	for i := range config.steps {
+		st := &config.steps[i]
+		field := rv.Field(st.index)
 
-		// 跳过不可设置的字段
-		if !field.CanSet() {
-			continue
-		}
-
-		// 处理嵌套结构体（先处理嵌套，再处理当前字段的翻译）
-		if field.Kind() == reflect.Struct {
+		// 先处理嵌套，再处理当前字段的翻译
+		switch st.nested {
+		case nestedStruct:
 			if err := dm.translateStructV(field, seen, false); err != nil {
 				return err
 			}
-		}
-
-		// 处理指针类型的嵌套结构体（指针目标可能成环，viaPtr=true 记 visited）
-		if field.Kind() == reflect.Ptr && !field.IsNil() {
-			if target := field.Elem(); target.Kind() == reflect.Struct {
-				if err := dm.translateStructV(target, seen, true); err != nil {
+		case nestedPtr:
+			// 指针目标可能成环，viaPtr=true 记 visited
+			if !field.IsNil() {
+				if err := dm.translateStructV(field.Elem(), seen, true); err != nil {
 					return err
 				}
 			}
-		}
-
-		// 处理切片中的结构体
-		if field.Kind() == reflect.Slice {
+		case nestedSlice:
 			if err := dm.translateSliceV(field, seen); err != nil {
 				return err
 			}
 		}
 
 		// 处理翻译标签（dict, enum, translator等）
-		if fieldCfg := config.byIndex[i]; fieldCfg != nil {
+		if fieldCfg := st.cfg; fieldCfg != nil {
 			if fieldCfg.translator != nil {
-				if err := dm.translateFieldWithTranslator(field, fieldType, *fieldCfg, rv, seen); err != nil {
+				if err := dm.translateFieldWithTranslator(field, fieldCfg, rv, seen); err != nil {
 					return err
 				}
-			} else if fieldCfg.translatorTag != "" && seen.collect == nil {
+			} else if fieldCfg.dictName != "" && seen.collect == nil {
 				// 兼容旧的 dict 标签（内存字典，收集模式下无事可做）
-				if err := dm.translateField(field, fieldType, *fieldCfg, rv); err != nil {
+				if err := dm.translateField(field, fieldCfg, rv); err != nil {
 					return err
 				}
 			}
@@ -446,6 +456,7 @@ func (dm *DictManager) getOrCreateConfig(rt reflect.Type) *structConfig {
 
 		fieldCfg := fieldConfig{
 			fieldIndex:       i,
+			fieldName:        fieldType.Name,
 			targetField:      dictFieldTag,
 			targetFieldIndex: -1, // 初始化为 -1，表示未找到
 		}
@@ -482,8 +493,12 @@ func (dm *DictManager) getOrCreateConfig(rt reflect.Type) *structConfig {
 			fieldCfg.translator = DefaultEnumTranslator()
 			fieldCfg.translatorTag = enumTag
 		} else if dictTag != "" {
-			// 字典翻译（兼容旧版本，内存字典）
+			// 字典翻译（兼容旧版本，内存字典）：逗号前是字典名，这里拆好，热路径不再 Split
 			fieldCfg.translatorTag = dictTag
+			fieldCfg.dictName = dictTag
+			if j := strings.IndexByte(dictTag, ','); j >= 0 {
+				fieldCfg.dictName = dictTag[:j]
+			}
 		}
 
 		if fieldCfg.translator != nil || fieldCfg.translatorTag != "" {
@@ -505,6 +520,30 @@ func (dm *DictManager) getOrCreateConfig(rt reflect.Type) *structConfig {
 	config.byIndex = make([]*fieldConfig, rt.NumField())
 	for i := range config.fields {
 		config.byIndex[config.fields[i].fieldIndex] = &config.fields[i]
+	}
+
+	// 预算遍历步骤：只有"嵌套结构（struct / *struct / []struct / []*struct）"或"带翻译标签"的导出字段才进热路径
+	for i := 0; i < rt.NumField(); i++ {
+		sf := rt.Field(i)
+		if !sf.IsExported() {
+			continue
+		}
+		st := fieldStep{index: i, cfg: config.byIndex[i]}
+		switch ft := sf.Type; ft.Kind() {
+		case reflect.Struct:
+			st.nested = nestedStruct
+		case reflect.Ptr:
+			if ft.Elem().Kind() == reflect.Struct {
+				st.nested = nestedPtr
+			}
+		case reflect.Slice:
+			if et := ft.Elem(); et.Kind() == reflect.Struct || (et.Kind() == reflect.Ptr && et.Elem().Kind() == reflect.Struct) {
+				st.nested = nestedSlice
+			}
+		}
+		if st.nested != nestedNone || st.cfg != nil {
+			config.steps = append(config.steps, st)
+		}
 	}
 
 	// 没有导出字段的结构体（time.Time 等）翻译时什么都做不了，标记为 noop
@@ -558,13 +597,9 @@ func (dm *DictManager) translateSliceV(sliceValue reflect.Value, seen *walk) err
 }
 
 // translateField 翻译字段
-func (dm *DictManager) translateField(field reflect.Value, fieldType reflect.StructField, fieldCfg fieldConfig, structValue reflect.Value) error {
-	// 解析标签
-	tagParts := strings.Split(fieldCfg.translatorTag, ",")
-	dictName := tagParts[0]
-
-	// 获取字典（原子读注册表快照，无锁）
-	dict := dm.loadReg().dicts[dictName]
+func (dm *DictManager) translateField(field reflect.Value, fieldCfg *fieldConfig, structValue reflect.Value) error {
+	// 获取字典（原子读注册表快照，无锁；字典名已在配置缓存里拆好）
+	dict := dm.loadReg().dicts[fieldCfg.dictName]
 	if dict == nil {
 		return nil // 字典不存在，跳过
 	}
@@ -618,7 +653,7 @@ func (dm *DictManager) translateField(field reflect.Value, fieldType reflect.Str
 }
 
 // translateFieldWithTranslator 使用翻译器翻译字段
-func (dm *DictManager) translateFieldWithTranslator(field reflect.Value, fieldType reflect.StructField, fieldCfg fieldConfig, structValue reflect.Value, w *walk) error {
+func (dm *DictManager) translateFieldWithTranslator(field reflect.Value, fieldCfg *fieldConfig, structValue reflect.Value, w *walk) error {
 	// 获取源字段值
 	var sourceValue any
 	switch field.Kind() {
@@ -644,9 +679,9 @@ func (dm *DictManager) translateFieldWithTranslator(field reflect.Value, fieldTy
 	var translatedValue string
 	var err error
 	if ct, ok := fieldCfg.translator.(ContextTranslator); ok && w.ctx != nil {
-		translatedValue, err = ct.TranslateContext(w.ctx, sourceValue, fieldType.Name, fieldCfg.translatorTag)
+		translatedValue, err = ct.TranslateContext(w.ctx, sourceValue, fieldCfg.fieldName, fieldCfg.translatorTag)
 	} else {
-		translatedValue, err = fieldCfg.translator.Translate(sourceValue, fieldType.Name, fieldCfg.translatorTag)
+		translatedValue, err = fieldCfg.translator.Translate(sourceValue, fieldCfg.fieldName, fieldCfg.translatorTag)
 	}
 	if err != nil {
 		return err
