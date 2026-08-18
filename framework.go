@@ -2,8 +2,6 @@ package dict
 
 import (
 	"fmt"
-	"reflect"
-	"sync"
 )
 
 // Framework 翻译框架主入口
@@ -23,14 +21,8 @@ func NewFramework(config *Config) *Framework {
 	}
 
 	return &Framework{
-		config: config,
-		manager: &DictManager{
-			dicts:       make(map[string]map[string]string),
-			translators: make(map[string]Translator),
-			unwrappers:  make([]UnWrapper, 0),
-			configCache: make(map[reflect.Type]*structConfig),
-			configMutex: sync.RWMutex{},
-		},
+		config:     config,
+		manager:    newDictManager(),
 		optimizer:  NewBatchQueryOptimizer(),
 		preloader:  NewPreloadManager(),
 		monitor:    NewPerformanceMonitor(),
@@ -94,12 +86,12 @@ func (f *Framework) Translate(v interface{}, options ...*TranslateOptions) error
 
 // RegisterDict 注册字典
 func (f *Framework) RegisterDict(name string, dict map[string]string) {
-	f.manager.dicts[name] = dict
+	f.manager.RegisterDict(name, dict)
 }
 
 // RegisterTranslator 注册翻译器
 func (f *Framework) RegisterTranslator(tagName string, translator Translator) {
-	f.manager.translators[tagName] = translator
+	f.manager.RegisterTranslator(tagName, translator)
 }
 
 // GetMetrics 获取性能指标
