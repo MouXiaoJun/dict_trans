@@ -81,7 +81,7 @@ config := &dict.Config{
         BatchQueryThreshold: 10,  // 批量查询阈值
         ParallelThreshold:   100, // 并行处理阈值
         MaxConcurrency:       20,  // 最大并发数
-        PreloadDicts:         []string{"sex", "status"}, // 预加载字典
+        PreloadDicts:         []string{"sex", "status"}, // 预加载字典（Init 时通过已注册的字典表翻译器的 DictTableLoader 整表加载；CreateDictTableTranslatorFromDB 已实现）
     },
     Cache: dict.CacheConfig{
         Enabled:   true,
@@ -232,7 +232,7 @@ for name, metric := range metrics {
 // 批量翻译选项
 options := &dict.BatchOptions{
     Parallel:   true,    // 并行处理
-    BatchQuery: true,    // 批量查询优化
+    BatchQuery: true,    // 批量查询优化：切片 >= BatchQueryThreshold 时先收集 DB 类字段的 key，每组一次 IN 查询预热缓存（后端需实现 *BatchTranslator 可选接口）
     Concurrency: 20,     // 并发数
 }
 

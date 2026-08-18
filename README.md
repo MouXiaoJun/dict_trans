@@ -71,22 +71,33 @@ dict.RegisterDictTableTwoTranslator(dict.CreateDictTableTwoTranslatorFromDB(db, 
 
 Query results are cached in memory (`EnableDictTableCache`, `ClearDictTableCache`, and the `DB*` equivalents). See [examples/](examples/) for runnable programs.
 
-## Batch translation
+## Options, context and batching
+
+`TranslateWith` takes functional options; `Translate` / `BatchTranslate` are thin wrappers over it.
 
 ```go
-items := make([]*Item, 0, 10000)
-// ...
-err := dict.BatchTranslate(&items, true) // parallel worker pool for len >= 10
+err := dict.TranslateWith(&rows,
+    dict.WithContext(ctx),   // cancellation checked per struct; passed to translators implementing ContextTranslator
+    dict.WithParallel(),     // worker pool for slices with >= 10 elements
+    dict.WithoutPrefetch(),  // opt out of the DB prefetch below
+)
 ```
 
-On the first translator error the remaining workers stop and the error is returned; already-translated elements keep their values.
+Generic entrypoints move the pointer/slice checks to compile time: `dict.TranslateOf(&u)` (`*T`), `dict.BatchTranslateOf(items, true)` (`[]*T`).
 
-Generic entrypoints move the pointer/slice checks to compile time:
+**No N+1.** For slices with at least `Config.Performance.BatchQueryThreshold` (default 10) elements, database-backed fields (`db`, `dictTable`, `dictTableTwo`) are collected in one pass and fetched with a single `IN (...)` query per dictionary group, warming the result cache before the translation pass. Backends opt in by implementing the optional interfaces:
 
-```go
-_ = dict.TranslateOf(&u)             // *T
-_ = dict.BatchTranslateOf(items, true) // []*T
-```
+| Backend | Optional interface | Enables |
+| --- | --- | --- |
+| `DBTranslator` | `DBContextTranslator`, `DBBatchTranslator` | ctx, batch |
+| `DictTableTranslator` / `DictTableTwoTranslator` | `DictTableContextTranslator`, `DictTableBatchTranslator`, `DictTableLoader` | ctx, batch, preload |
+| any `Translator` | `ContextTranslator` | receives `ctx` from `WithContext` |
+
+`CreateDictTableTranslatorFromDB` / `CreateDictTableTwoTranslatorFromDB` already implement all of them (`QueryRowContext`, `IN` queries, full-dictionary load). A backend without batch support silently falls back to per-key lookups.
+
+**Result cache.** DB lookups are cached per kind (`EnableDBCache`, `ClearDBCache`, `EnableDictTableCache`, ...). If `Config.Cache.Enabled` and `Config.Cache.CustomCache` are set (e.g. a Redis adapter implementing `Cache`), results go there with `Config.Cache.TTL`, keyed `db:` / `dictTable:` / `dictTableTwo:` + group + key. Note that `Clear*Cache` calls `CustomCache.Clear()`, which clears the shared custom cache.
+
+**Framework extras.** `NewFramework(cfg).Init()` preloads `cfg.Performance.PreloadDicts` through `DictTableLoader` (`fw.Preloaded(type, key)`), and `fw.GetMetrics()["translate"]` reports count / min / max / avg latency and error count for `fw.Translate`. `NewDictManager()` gives an isolated manager (own dictionaries, translators and config cache) for multi-tenant or test setups.
 
 ## Concurrency and limits
 
@@ -95,6 +106,7 @@ _ = dict.BatchTranslateOf(items, true) // []*T
 - Cyclic structures (self-referencing pointers, parent/child links) are handled: each pointer target is translated once per `Translate` call.
 - Translation is best-effort: a missing dictionary, missing target field or non-string target is silently skipped, not an error. Errors come only from translators (e.g. database failures).
 - Source fields must be `string` or integer kinds; target fields must be `string`.
+- `WithParallel` / `BatchTranslate(..., true)`: nested pointer targets shared by several elements are translated exactly once (a shared visited set), but the *same pointer appearing several times as a top-level element* is translated by whichever worker gets it — de-duplicate such slices before translating in parallel. Parallel mode pays off for I/O-bound translators (database lookups); for in-memory dictionaries the sequential path is usually faster.
 
 ## Framework mode
 

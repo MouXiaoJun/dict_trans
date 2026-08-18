@@ -11,6 +11,11 @@
 // (RegisterTranslator). Translate walks nested structs, pointers and slices;
 // BatchTranslate adds a parallel worker pool for large slices.
 //
+// TranslateWith adds functional options: WithContext for cancellation (passed to
+// translators implementing ContextTranslator), WithParallel for a worker pool and
+// WithoutPrefetch to disable the two-phase database prefetch that turns N+1 lookups
+// into one IN query per dictionary group.
+//
 // Translation is best-effort: unknown dictionaries or missing target fields are
 // skipped silently; only translator errors (for example database failures) are
 // returned. All functions are safe for concurrent use; the registry is
