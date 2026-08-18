@@ -1,13 +1,15 @@
 package dict
 
 import (
+	"context"
 	"reflect"
 	"sync"
 )
 
 // BatchTranslate 批量翻译（支持并行处理）
-// items: 要翻译的切片
-// parallel: 是否并行处理（默认 false，保持向后兼容）
+// items: 要翻译的切片指针
+// parallel: 是否并行处理（长度 >= 10 时启用 worker pool）
+// 等价于 TranslateWith(items, WithParallel())，但只接受切片。
 func BatchTranslate(items any, parallel bool) error {
 	return defaultManager.BatchTranslate(items, parallel)
 }
@@ -18,31 +20,25 @@ func (dm *DictManager) BatchTranslate(items any, parallel bool) error {
 	if rv.Kind() != reflect.Ptr {
 		return ErrNotPointer
 	}
-
 	rv = rv.Elem()
 	if rv.Kind() != reflect.Slice {
 		return ErrNotSlice
 	}
-
-	length := rv.Len()
-	if length == 0 {
+	if rv.Len() == 0 {
 		return nil
 	}
-
-	if !parallel || length < 10 {
-		// 小批量或禁用并行时，顺序处理
-		return dm.translateSlice(rv)
-	}
-
-	// 并行处理
-	return dm.batchTranslateParallel(rv)
+	return dm.translateSliceOpts(rv, &translateOpts{parallel: parallel})
 }
 
 // batchTranslateParallel 并行批量翻译
 // 任一 worker 出错即通知其他 worker 停止，返回第一个错误。
 // ponytail: 需要超时/取消时再加 BatchTranslateContext
-func (dm *DictManager) batchTranslateParallel(sliceValue reflect.Value) error {
+func (dm *DictManager) batchTranslateParallel(sliceValue reflect.Value, ctx context.Context) error {
 	length := sliceValue.Len()
+	var ctxDone <-chan struct{} // ctx 为 nil 时保持 nil channel，select 里永远不就绪
+	if ctx != nil {
+		ctxDone = ctx.Done()
+	}
 
 	// 使用 worker pool 模式，避免创建过多 goroutine
 	workerCount := 10
@@ -74,12 +70,14 @@ func (dm *DictManager) batchTranslateParallel(sliceValue reflect.Value) error {
 		wg.Add(1)
 		go func(start, end int) {
 			defer wg.Done()
-			seen := &visited{} // 每个 worker 一份：本 chunk 内共享的指针目标只走一次
+			seen := &walk{ctx: ctx} // 每个 worker 一份：本 chunk 内共享的指针目标只走一次
 
 			// 处理这个区间的数据
 			for j := start; j < end; j++ {
 				select {
 				case <-done:
+					return
+				case <-ctxDone:
 					return
 				default:
 				}
@@ -104,11 +102,14 @@ func (dm *DictManager) batchTranslateParallel(sliceValue reflect.Value) error {
 	wg.Wait()
 	close(errChan)
 
-	// 返回第一个错误
+	// 返回第一个错误；没有错误但 ctx 已取消时返回取消原因
 	for err := range errChan {
 		if err != nil {
 			return err
 		}
+	}
+	if ctx != nil {
+		return ctx.Err()
 	}
 	return nil
 }

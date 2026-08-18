@@ -20,6 +20,8 @@
 package dict
 
 import (
+	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -83,14 +85,18 @@ func NewDictManager() *DictManager {
 	}
 }
 
-// visited 记录一次翻译过程中已进入过的指针目标，防止自引用/环形结构无限递归。
-// 只有经指针到达的结构体才需要记录（值类型嵌套不可能成环），map 惰性分配，无指针的常见场景零开销。
-// 以 (地址, 类型) 为键：外层结构体与其第一个字段地址相同，只用地址会误判。
-// 每次顶层翻译私有，不放在 DictManager 上。
-type visited struct {
-	small [4]visitKey // 前几个指针目标放栈上，常见 DTO 不碰堆
-	n     int
-	m     map[visitKey]struct{} // 溢出后才分配
+// walk 一次翻译遍历的私有状态（不放在 DictManager 上）：
+//   - ctx：TranslateWith(WithContext) 传入，进结构体时检查取消，并传给实现了 ContextTranslator 的翻译器
+//   - collect：非 nil 表示"收集模式"——只收集 DB 类翻译器要查的 key，不翻译；用于批量前一次 IN 查询预热缓存
+//   - visited 集：记录已进入过的指针目标，防止自引用/环形结构无限递归。
+//     只有经指针到达的结构体才需要记录（值类型嵌套不可能成环），map 惰性分配，无指针的常见场景零开销。
+//     以 (地址, 类型) 为键：外层结构体与其第一个字段地址相同，只用地址会误判。
+type walk struct {
+	ctx     context.Context
+	collect map[*lookupTranslator][]string
+	small   [4]visitKey // 前几个指针目标放栈上，常见 DTO 不碰堆
+	n       int
+	m       map[visitKey]struct{} // 溢出后才分配
 }
 
 type visitKey struct {
@@ -99,7 +105,7 @@ type visitKey struct {
 }
 
 // mark 记录一个指针目标；已记录过返回 false（调用方跳过）。
-func (seen *visited) mark(rv reflect.Value) bool {
+func (seen *walk) mark(rv reflect.Value) bool {
 	if !rv.CanAddr() {
 		return true
 	}
@@ -128,9 +134,10 @@ var defaultManager = NewDictManager()
 
 // structConfig 结构体配置缓存
 type structConfig struct {
-	fields  []fieldConfig
-	byIndex []*fieldConfig // 按字段下标预建的索引，长度 = NumField，无配置处为 nil
-	noop    bool           // 没有任何可设置字段（如 time.Time），翻译时直接跳过、不记 visited
+	fields    []fieldConfig
+	byIndex   []*fieldConfig // 按字段下标预建的索引，长度 = NumField，无配置处为 nil
+	noop      bool           // 没有任何可设置字段（如 time.Time），翻译时直接跳过、不记 visited
+	mayLookup bool           // 自身有 DB 类翻译器，或有嵌套 struct/ptr/slice 字段（可能藏着）——决定批量前要不要走收集遍历
 }
 
 // fieldConfig 字段配置
@@ -184,6 +191,48 @@ func (dm *DictManager) RegisterTranslator(tagName string, translator Translator)
 
 // Translate 翻译结构体（实例方法）
 func (dm *DictManager) Translate(v any) error {
+	return dm.TranslateWith(v)
+}
+
+// Option TranslateWith 的函数式选项
+type Option func(*translateOpts)
+
+type translateOpts struct {
+	ctx        context.Context
+	parallel   bool
+	noPrefetch bool
+}
+
+// WithContext 传入 ctx：进每个结构体前检查取消；实现了 ContextTranslator 的翻译器（含内置 DB 类）会收到它
+func WithContext(ctx context.Context) Option { return func(o *translateOpts) { o.ctx = ctx } }
+
+// WithParallel 切片长度 >= 10 时用 worker pool 并行翻译（等价于 BatchTranslate(items, true)）
+func WithParallel() Option { return func(o *translateOpts) { o.parallel = true } }
+
+// WithoutPrefetch 关闭切片批量前的 DB 预取（默认：元素数 >= Config.Performance.BatchQueryThreshold 时，
+// 先收集所有 DB 类字段的 key，按分组一次 IN 查询预热缓存，把 N+1 变成 1）
+func WithoutPrefetch() Option { return func(o *translateOpts) { o.noPrefetch = true } }
+
+func buildOpts(opts []Option) translateOpts {
+	var o translateOpts
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+// TranslateWith 带选项翻译：v 是 *Struct 或 *[]Struct / *[]*Struct（包装类型会先解包）
+func TranslateWith(v any, opts ...Option) error {
+	return defaultManager.TranslateWith(v, opts...)
+}
+
+// TranslateWith 带选项翻译（实例方法）
+func (dm *DictManager) TranslateWith(v any, opts ...Option) error {
+	var o translateOpts
+	if len(opts) > 0 {
+		o = buildOpts(opts) // 只有真传了选项才有一次堆分配，Translate(v) 零开销
+	}
+
 	// 尝试解包包装类型
 	if unwrapped, ok := dm.tryUnwrap(v); ok {
 		v = unwrapped
@@ -193,37 +242,81 @@ func (dm *DictManager) Translate(v any) error {
 	if rv.Kind() != reflect.Ptr {
 		return ErrNotPointer
 	}
-
 	rv = rv.Elem()
 
-	// 支持切片类型
 	if rv.Kind() == reflect.Slice {
-		return dm.translateSlice(rv)
+		return dm.translateSliceOpts(rv, &o)
 	}
-
 	if rv.Kind() != reflect.Struct {
 		return ErrNotStruct
 	}
-
-	return dm.translateStruct(rv)
+	return dm.translateStructV(rv, &walk{ctx: o.ctx}, false)
 }
 
-// translateStruct 翻译顶层结构体（私有一份 visited）
+// translateSliceOpts 顶层切片：预取 → 并行 / 顺序
+func (dm *DictManager) translateSliceOpts(sliceValue reflect.Value, o *translateOpts) error {
+	if err := dm.prefetchSlice(sliceValue, o); err != nil {
+		return err
+	}
+	if o.parallel && sliceValue.Len() >= 10 {
+		return dm.batchTranslateParallel(sliceValue, o.ctx)
+	}
+	return dm.translateSlice(sliceValue, o.ctx)
+}
+
+// translateStruct 翻译顶层结构体（私有一份 walk）
 func (dm *DictManager) translateStruct(rv reflect.Value) error {
-	return dm.translateStructV(rv, &visited{}, false)
+	return dm.translateStructV(rv, &walk{}, false)
 }
 
 // translateSlice 翻译顶层切片：整个切片共享一份 visited。
 // 顶层元素本身不记 visited（平铺 []*Row 零开销），只记从元素内部经指针到达的目标，
 // 所以父子链 / 树形数据里被多个元素共享的子图只走一次，总体 O(n) 而不是 O(n²)。
-func (dm *DictManager) translateSlice(sliceValue reflect.Value) error {
-	seen := &visited{}
+func (dm *DictManager) translateSlice(sliceValue reflect.Value, ctx context.Context) error {
+	w := &walk{ctx: ctx}
 	for i := 0; i < sliceValue.Len(); i++ {
 		elem, ok := sliceElemStruct(sliceValue.Index(i))
 		if !ok {
 			continue
 		}
-		if err := dm.translateStructV(elem, seen, false); err != nil {
+		if err := dm.translateStructV(elem, w, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// prefetchSlice 批量前的两阶段第一步：收集模式走一遍切片，把 DB 类翻译器要查的 key 按分组攒起来，
+// 每组一次批量查询预热结果缓存（后端不支持批量则跳过）。元素类型不可能含 DB 类字段时零开销。
+func (dm *DictManager) prefetchSlice(sliceValue reflect.Value, o *translateOpts) error {
+	n := sliceValue.Len()
+	if o.noPrefetch || n == 0 || n < GetConfig().Performance.BatchQueryThreshold {
+		return nil
+	}
+	elemType := sliceValue.Type().Elem()
+	if elemType.Kind() == reflect.Ptr {
+		elemType = elemType.Elem()
+	}
+	if elemType.Kind() != reflect.Struct || !dm.getOrCreateConfig(elemType).mayLookup {
+		return nil
+	}
+
+	w := &walk{ctx: o.ctx, collect: make(map[*lookupTranslator][]string)}
+	for i := 0; i < n; i++ {
+		elem, ok := sliceElemStruct(sliceValue.Index(i))
+		if !ok {
+			continue
+		}
+		if err := dm.translateStructV(elem, w, false); err != nil {
+			return err
+		}
+	}
+	ctx := o.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for lt, keys := range w.collect {
+		if err := lt.mgr.prefetch(ctx, lt.group, keys); err != nil {
 			return err
 		}
 	}
@@ -243,7 +336,7 @@ func sliceElemStruct(elem reflect.Value) (reflect.Value, bool) {
 
 // translateStructV 翻译结构体。viaPtr=true 表示 rv 是经指针到达的目标，需要记 visited 防环；
 // 值类型嵌套不可能成环，不记。
-func (dm *DictManager) translateStructV(rv reflect.Value, seen *visited, viaPtr bool) error {
+func (dm *DictManager) translateStructV(rv reflect.Value, seen *walk, viaPtr bool) error {
 	rt := rv.Type()
 
 	// 获取或创建配置缓存（含按字段下标预建的索引）
@@ -253,6 +346,11 @@ func (dm *DictManager) translateStructV(rv reflect.Value, seen *visited, viaPtr 
 	}
 	if viaPtr && !seen.mark(rv) {
 		return nil
+	}
+	if seen.ctx != nil {
+		if err := seen.ctx.Err(); err != nil {
+			return err
+		}
 	}
 
 	// 遍历所有字段（不仅仅是配置中的字段，因为嵌套结构体可能没有翻译标签）
@@ -291,11 +389,11 @@ func (dm *DictManager) translateStructV(rv reflect.Value, seen *visited, viaPtr 
 		// 处理翻译标签（dict, enum, translator等）
 		if fieldCfg := config.byIndex[i]; fieldCfg != nil {
 			if fieldCfg.translator != nil {
-				if err := dm.translateFieldWithTranslator(field, fieldType, *fieldCfg, rv); err != nil {
+				if err := dm.translateFieldWithTranslator(field, fieldType, *fieldCfg, rv, seen); err != nil {
 					return err
 				}
-			} else if fieldCfg.translatorTag != "" {
-				// 兼容旧的 dict 标签
+			} else if fieldCfg.translatorTag != "" && seen.collect == nil {
+				// 兼容旧的 dict 标签（内存字典，收集模式下无事可做）
 				if err := dm.translateField(field, fieldType, *fieldCfg, rv); err != nil {
 					return err
 				}
@@ -413,12 +511,33 @@ func (dm *DictManager) getOrCreateConfig(rt reflect.Type) *structConfig {
 		}
 	}
 
+	// 可能需要 DB 预取：自身字段挂了 lookupTranslator，或有嵌套 struct / ptr / slice（里面可能有）
+	for i := range config.fields {
+		if _, ok := config.fields[i].translator.(*lookupTranslator); ok {
+			config.mayLookup = true
+			break
+		}
+	}
+	if !config.mayLookup {
+		for i := 0; i < rt.NumField(); i++ {
+			switch rt.Field(i).Type.Kind() {
+			case reflect.Struct, reflect.Ptr, reflect.Slice:
+				if rt.Field(i).IsExported() {
+					config.mayLookup = true
+				}
+			}
+			if config.mayLookup {
+				break
+			}
+		}
+	}
+
 	dm.configCache[rt] = config
 	return config
 }
 
 // translateSliceV 翻译嵌套切片（共享父结构体的 visited，因为元素可能指回父节点）
-func (dm *DictManager) translateSliceV(sliceValue reflect.Value, seen *visited) error {
+func (dm *DictManager) translateSliceV(sliceValue reflect.Value, seen *walk) error {
 	for i := 0; i < sliceValue.Len(); i++ {
 		raw := sliceValue.Index(i)
 		elem, ok := sliceElemStruct(raw)
@@ -494,7 +613,7 @@ func (dm *DictManager) translateField(field reflect.Value, fieldType reflect.Str
 }
 
 // translateFieldWithTranslator 使用翻译器翻译字段
-func (dm *DictManager) translateFieldWithTranslator(field reflect.Value, fieldType reflect.StructField, fieldCfg fieldConfig, structValue reflect.Value) error {
+func (dm *DictManager) translateFieldWithTranslator(field reflect.Value, fieldType reflect.StructField, fieldCfg fieldConfig, structValue reflect.Value, w *walk) error {
 	// 获取源字段值
 	var sourceValue any
 	switch field.Kind() {
@@ -508,8 +627,22 @@ func (dm *DictManager) translateFieldWithTranslator(field reflect.Value, fieldTy
 		sourceValue = field.Interface()
 	}
 
-	// 调用翻译器
-	translatedValue, err := fieldCfg.translator.Translate(sourceValue, fieldType.Name, fieldCfg.translatorTag)
+	// 收集模式：只记下 DB 类翻译器要查的 key，不翻译
+	if w.collect != nil {
+		if lt, ok := fieldCfg.translator.(*lookupTranslator); ok {
+			w.collect[lt] = append(w.collect[lt], fmt.Sprintf("%v", sourceValue))
+		}
+		return nil
+	}
+
+	// 调用翻译器：带 ctx 且翻译器支持时走 ContextTranslator
+	var translatedValue string
+	var err error
+	if ct, ok := fieldCfg.translator.(ContextTranslator); ok && w.ctx != nil {
+		translatedValue, err = ct.TranslateContext(w.ctx, sourceValue, fieldType.Name, fieldCfg.translatorTag)
+	} else {
+		translatedValue, err = fieldCfg.translator.Translate(sourceValue, fieldType.Name, fieldCfg.translatorTag)
+	}
 	if err != nil {
 		return err
 	}
