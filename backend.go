@@ -100,7 +100,7 @@ func (c *resultCache) clear() {
 
 // ---------------------------------------------------------------------------
 // lookupManager：一类 DB 后端（db / dictTable / dictTableTwo）= 已注册后端 + 结果缓存
-// group 是查找分组（字典类型，或 table|keyField|valueField），key 是字典键
+// parts 是查找分组（dictTable：[dictType]；db：[table, keyField, valueField]），key 是字典键
 // ---------------------------------------------------------------------------
 
 type lookupManager struct {
@@ -111,16 +111,19 @@ type lookupManager struct {
 
 // lookupBackend 把三类后端接口统一成 one / many / load 三个能力；many / load 为 nil 表示不支持
 type lookupBackend struct {
-	one  func(ctx context.Context, group, key string) (string, error)
-	many func(ctx context.Context, group string, keys []string) (map[string]string, error)
-	load func(ctx context.Context, group string) (map[string]string, error)
+	one  func(ctx context.Context, parts []string, key string) (string, error)
+	many func(ctx context.Context, parts []string, keys []string) (map[string]string, error)
+	load func(ctx context.Context, parts []string) (map[string]string, error)
 }
+
+// cacheGroup 分组的缓存键前缀；分隔符只影响缓存键，不再被反解析
+func cacheGroup(parts []string) string { return strings.Join(parts, "\x00") }
 
 func newLookupManager(name string) *lookupManager {
 	return &lookupManager{name: name, cache: newResultCache(name)}
 }
 
-func (m *lookupManager) lookup(ctx context.Context, group, key string) (string, error) {
+func (m *lookupManager) lookup(ctx context.Context, group string, parts []string, key string) (string, error) {
 	cacheKey := group + ":" + key
 	if v, ok := m.cache.get(cacheKey); ok {
 		return v, nil
@@ -129,7 +132,7 @@ func (m *lookupManager) lookup(ctx context.Context, group, key string) (string, 
 	if b == nil {
 		return "", fmt.Errorf("%s translator not registered", m.name)
 	}
-	v, err := b.one(ctx, group, key)
+	v, err := b.one(ctx, parts, key)
 	if err != nil {
 		return "", err
 	}
@@ -138,7 +141,7 @@ func (m *lookupManager) lookup(ctx context.Context, group, key string) (string, 
 }
 
 // prefetch 批量预热：只查未命中缓存的 key；后端不支持批量则什么都不做（后续按单 key 走）
-func (m *lookupManager) prefetch(ctx context.Context, group string, keys []string) error {
+func (m *lookupManager) prefetch(ctx context.Context, group string, parts []string, keys []string) error {
 	b := m.backend.Load()
 	if b == nil || b.many == nil || !m.cache.enabled.Load() {
 		return nil
@@ -162,7 +165,7 @@ func (m *lookupManager) prefetch(ctx context.Context, group string, keys []strin
 	}
 	var batchErr error
 	opt.ExecuteBatch(group, func(ks []string) (map[string]string, error) {
-		res, err := b.many(ctx, group, ks)
+		res, err := b.many(ctx, parts, ks)
 		batchErr = err
 		return res, err
 	})
@@ -170,12 +173,13 @@ func (m *lookupManager) prefetch(ctx context.Context, group string, keys []strin
 }
 
 // preload 预加载整个分组
-func (m *lookupManager) preload(ctx context.Context, group string) (map[string]string, error) {
+func (m *lookupManager) preload(ctx context.Context, parts []string) (map[string]string, error) {
 	b := m.backend.Load()
 	if b == nil || b.load == nil {
 		return nil, fmt.Errorf("%s translator does not support preload (implement DictTableLoader)", m.name)
 	}
-	data, err := b.load(ctx, group)
+	group := cacheGroup(parts)
+	data, err := b.load(ctx, parts)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +195,12 @@ func (m *lookupManager) preload(ctx context.Context, group string) (map[string]s
 
 type lookupTranslator struct {
 	mgr   *lookupManager
-	group string
+	parts []string // dictTable：[dictType]；db：[table, keyField, valueField]
+	group string   // cacheGroup(parts)，预先算好
+}
+
+func newLookupTranslator(mgr *lookupManager, parts ...string) *lookupTranslator {
+	return &lookupTranslator{mgr: mgr, parts: parts, group: cacheGroup(parts)}
 }
 
 func (t *lookupTranslator) Translate(value any, fieldName string, tagValue string) (string, error) {
@@ -199,7 +208,7 @@ func (t *lookupTranslator) Translate(value any, fieldName string, tagValue strin
 }
 
 func (t *lookupTranslator) TranslateContext(ctx context.Context, value any, _ string, _ string) (string, error) {
-	return t.mgr.lookup(ctx, t.group, fmt.Sprintf("%v", value))
+	return t.mgr.lookup(ctx, t.group, t.parts, fmt.Sprintf("%v", value))
 }
 
 // ---------------------------------------------------------------------------
@@ -210,33 +219,21 @@ var (
 	defaultDBTranslatorManager = newLookupManager("db")
 	defaultDictTableManager    = newLookupManager("dictTable")
 	defaultDictTableTwoManager = newLookupManager("dictTableTwo")
-	dbGroupSep                 = "\x00"
 )
-
-func dbGroup(table, keyField, valueField string) string {
-	return table + dbGroupSep + keyField + dbGroupSep + valueField
-}
-
-func splitDBGroup(group string) (table, keyField, valueField string) {
-	parts := strings.SplitN(group, dbGroupSep, 3)
-	return parts[0], parts[1], parts[2]
-}
 
 // RegisterDBTranslator 注册数据库翻译器（可选实现 DBContextTranslator / DBBatchTranslator）
 func RegisterDBTranslator(translator DBTranslator) {
 	b := &lookupBackend{
-		one: func(ctx context.Context, group, key string) (string, error) {
-			table, kf, vf := splitDBGroup(group)
+		one: func(ctx context.Context, p []string, key string) (string, error) {
 			if ct, ok := translator.(DBContextTranslator); ok {
-				return ct.QueryContext(ctx, table, kf, vf, key)
+				return ct.QueryContext(ctx, p[0], p[1], p[2], key)
 			}
-			return translator.Query(table, kf, vf, key)
+			return translator.Query(p[0], p[1], p[2], key)
 		},
 	}
 	if bt, ok := translator.(DBBatchTranslator); ok {
-		b.many = func(ctx context.Context, group string, keys []string) (map[string]string, error) {
-			table, kf, vf := splitDBGroup(group)
-			return bt.QueryBatch(ctx, table, kf, vf, keys)
+		b.many = func(ctx context.Context, p []string, keys []string) (map[string]string, error) {
+			return bt.QueryBatch(ctx, p[0], p[1], p[2], keys)
 		}
 	}
 	defaultDBTranslatorManager.backend.Store(b)
@@ -249,25 +246,27 @@ func EnableDBCache(enabled bool) { defaultDBTranslatorManager.cache.enabled.Stor
 func ClearDBCache() { defaultDBTranslatorManager.cache.clear() }
 
 func createDBTranslator(table, keyField, valueField string) Translator {
-	return &lookupTranslator{mgr: defaultDBTranslatorManager, group: dbGroup(table, keyField, valueField)}
+	return newLookupTranslator(defaultDBTranslatorManager, table, keyField, valueField)
 }
 
 func dictTableBackend(translator interface {
 	QueryDict(dictType, dictKey string) (string, error)
 }) *lookupBackend {
 	b := &lookupBackend{
-		one: func(ctx context.Context, group, key string) (string, error) {
+		one: func(ctx context.Context, p []string, key string) (string, error) {
 			if ct, ok := translator.(DictTableContextTranslator); ok {
-				return ct.QueryDictContext(ctx, group, key)
+				return ct.QueryDictContext(ctx, p[0], key)
 			}
-			return translator.QueryDict(group, key)
+			return translator.QueryDict(p[0], key)
 		},
 	}
 	if bt, ok := translator.(DictTableBatchTranslator); ok {
-		b.many = bt.QueryDictBatch
+		b.many = func(ctx context.Context, p []string, keys []string) (map[string]string, error) {
+			return bt.QueryDictBatch(ctx, p[0], keys)
+		}
 	}
 	if ld, ok := translator.(DictTableLoader); ok {
-		b.load = ld.LoadDict
+		b.load = func(ctx context.Context, p []string) (map[string]string, error) { return ld.LoadDict(ctx, p[0]) }
 	}
 	return b
 }
@@ -284,7 +283,7 @@ func EnableDictTableCache(enabled bool) { defaultDictTableManager.cache.enabled.
 func ClearDictTableCache() { defaultDictTableManager.cache.clear() }
 
 func createDictTableTranslator(dictType string) Translator {
-	return &lookupTranslator{mgr: defaultDictTableManager, group: dictType}
+	return newLookupTranslator(defaultDictTableManager, dictType)
 }
 
 // RegisterDictTableTwoTranslator 注册双表字典翻译器（可选实现 DictTableContextTranslator / DictTableBatchTranslator / DictTableLoader）
@@ -299,5 +298,5 @@ func EnableDictTableTwoCache(enabled bool) { defaultDictTableTwoManager.cache.en
 func ClearDictTableTwoCache() { defaultDictTableTwoManager.cache.clear() }
 
 func createDictTableTwoTranslator(dictTypeCode string) Translator {
-	return &lookupTranslator{mgr: defaultDictTableTwoManager, group: dictTypeCode}
+	return newLookupTranslator(defaultDictTableTwoManager, dictTypeCode)
 }

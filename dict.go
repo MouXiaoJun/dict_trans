@@ -340,7 +340,7 @@ func (dm *DictManager) prefetchSlice(sliceValue reflect.Value, o *translateOpts)
 		ctx = context.Background()
 	}
 	for lt, keys := range w.collect {
-		if err := lt.mgr.prefetch(ctx, lt.group, keys); err != nil {
+		if err := lt.mgr.prefetch(ctx, lt.group, lt.parts, keys); err != nil {
 			return err
 		}
 	}

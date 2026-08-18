@@ -52,7 +52,7 @@ func (f *Framework) Init() error {
 	for _, dictType := range f.config.Performance.PreloadDicts {
 		dt := dictType
 		err := f.preloader.Preload(dt, func() (map[string]string, error) {
-			return defaultDictTableManager.preload(context.Background(), dt)
+			return defaultDictTableManager.preload(context.Background(), []string{dt})
 		})
 		if err != nil {
 			return fmt.Errorf("预加载字典 %s 失败: %w", dt, err)
