@@ -25,6 +25,12 @@ jobs:
     
     - name: Get dependencies
       run: go mod download
+
+    - name: Vet
+      run: go vet ./...
+
+    - name: Build examples (separate module)
+      run: cd examples && go build ./...
     
     - name: Run tests (excluding examples)
       run: |
