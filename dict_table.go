@@ -59,6 +59,9 @@ func (t *sqlDictTable) QueryDictContext(ctx context.Context, dictType, dictKey s
 }
 
 func (t *sqlDictTable) QueryDictBatch(ctx context.Context, dictType string, dictKeys []string) (map[string]string, error) {
+	if len(dictKeys) == 0 {
+		return map[string]string{}, nil
+	}
 	query, args := t.cfg.BuildQueryIn(dictType, dictKeys)
 	return scanKeyValues(ctx, t.db, query, args, "查询字典表失败")
 }

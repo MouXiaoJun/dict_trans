@@ -189,6 +189,9 @@ func (tc *TableConfig) BuildQueryAll(dictType string) (string, []any) {
 
 // BuildQueryIn 构建批量查询：SELECT key, value FROM t WHERE type = ? AND key IN (?, ?, ...) [AND status = ?]
 func (tc *TableConfig) BuildQueryIn(dictType string, dictKeys []string) (string, []any) {
+	if len(dictKeys) == 0 {
+		return "", nil // 没有 key 就没有查询；调用方应直接返回空结果
+	}
 	query := "SELECT " + tc.Fields.KeyField + ", " + tc.Fields.ValueField + " FROM " + tc.TableName + " WHERE "
 	args := make([]any, 0, len(dictKeys)+2)
 	if tc.Fields.TypeField != "" {

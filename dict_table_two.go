@@ -80,6 +80,9 @@ func (t *sqlDictTableTwo) QueryDictContext(ctx context.Context, dictTypeCode, di
 }
 
 func (t *sqlDictTableTwo) QueryDictBatch(ctx context.Context, dictTypeCode string, dictKeys []string) (map[string]string, error) {
+	if len(dictKeys) == 0 {
+		return map[string]string{}, nil
+	}
 	ok, err := t.typeEnabled(ctx, dictTypeCode)
 	if err != nil || !ok {
 		return nil, err

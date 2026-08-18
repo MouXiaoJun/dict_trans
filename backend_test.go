@@ -252,3 +252,19 @@ func TestBuildQueryInAndAll(t *testing.T) {
 }
 
 func reflectTypeOf(v any) reflect.Type { return reflect.TypeOf(v) }
+
+// ClearDBCache 不应清掉 dictTable 的缓存（默认配置下三类缓存各自独立）
+func TestClearOneKindDoesNotTouchOthers(t *testing.T) {
+	be := &countingDictTable{data: map[string]map[string]string{"sex": {"1": "男"}}}
+	resetDictTableFor(t, be)
+	type Row struct {
+		Sex     string `dictTable:"sex" dictField:"SexName"`
+		SexName string
+	}
+	_ = Translate(&Row{Sex: "1"})
+	ClearDBCache()
+	_ = Translate(&Row{Sex: "1"})
+	if n := atomic.LoadInt64(&be.single); n != 1 {
+		t.Fatalf("ClearDBCache 后 dictTable 缓存应仍命中，实际查询 %d 次", n)
+	}
+}
