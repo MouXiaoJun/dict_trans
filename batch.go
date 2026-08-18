@@ -39,6 +39,8 @@ func (dm *DictManager) BatchTranslate(items interface{}, parallel bool) error {
 }
 
 // batchTranslateParallel 并行批量翻译
+// 任一 worker 出错即通知其他 worker 停止，返回第一个错误。
+// ponytail: 需要超时/取消时再加 BatchTranslateContext
 func (dm *DictManager) batchTranslateParallel(sliceValue reflect.Value) error {
 	length := sliceValue.Len()
 
@@ -49,7 +51,11 @@ func (dm *DictManager) batchTranslateParallel(sliceValue reflect.Value) error {
 	}
 
 	var wg sync.WaitGroup
+	// 容量 >= workerCount，每个 worker 最多发一次，发送永不阻塞
 	errChan := make(chan error, workerCount)
+	// 首个错误出现时关闭，其他 worker 检查到即退出
+	done := make(chan struct{})
+	var closeOnce sync.Once
 
 	// 每个 worker 处理一部分数据
 	chunkSize := (length + workerCount - 1) / workerCount
@@ -68,9 +74,15 @@ func (dm *DictManager) batchTranslateParallel(sliceValue reflect.Value) error {
 		wg.Add(1)
 		go func(start, end int) {
 			defer wg.Done()
+			seen := &visited{} // 每个 worker 一份：本 chunk 内共享的指针目标只走一次
 
 			// 处理这个区间的数据
 			for j := start; j < end; j++ {
+				select {
+				case <-done:
+					return
+				default:
+				}
 				elem := sliceValue.Index(j)
 				if elem.Kind() == reflect.Ptr {
 					if elem.IsNil() {
@@ -79,8 +91,9 @@ func (dm *DictManager) batchTranslateParallel(sliceValue reflect.Value) error {
 					elem = elem.Elem()
 				}
 				if elem.Kind() == reflect.Struct {
-					if err := dm.translateStruct(elem); err != nil {
+					if err := dm.translateStructV(elem, seen, false); err != nil {
 						errChan <- err
+						closeOnce.Do(func() { close(done) })
 						return
 					}
 				}
@@ -88,28 +101,14 @@ func (dm *DictManager) batchTranslateParallel(sliceValue reflect.Value) error {
 		}(start, end)
 	}
 
-	// 等待所有 worker 完成并关闭错误通道
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(errChan)
-		close(done)
-	}()
+	wg.Wait()
+	close(errChan)
 
-	// 收集错误
-	for {
-		select {
-		case err, ok := <-errChan:
-			if !ok {
-				// 通道已关闭，等待 done
-				<-done
-				return nil
-			}
-			if err != nil {
-				return err
-			}
-		case <-done:
-			return nil
+	// 返回第一个错误
+	for err := range errChan {
+		if err != nil {
+			return err
 		}
 	}
+	return nil
 }
