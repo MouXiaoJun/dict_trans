@@ -384,6 +384,43 @@ dict.BatchTranslate(&items, false)
 dict.BatchTranslate(&items, true)
 ```
 
+## 选项、ctx 与批量
+
+`TranslateWith` 接受函数式选项，`Translate` / `BatchTranslate` 是它的薄封装：
+
+```go
+err := dict.TranslateWith(&rows,
+    dict.WithContext(ctx),   // 进每个结构体前检查取消；传给实现了 ContextTranslator 的翻译器
+    dict.WithParallel(),     // 切片 >= 10 个元素时用 worker pool
+    dict.WithoutPrefetch(),  // 关闭下面的 DB 预取
+)
+```
+
+泛型入口把指针/切片检查提前到编译期：`dict.TranslateOf(&user)`（`*T`）、`dict.BatchTranslateOf(items, true)`（`[]*T`）。反射核心不能泛型化（struct tag 只能运行时读）。
+
+**没有 N+1。** 切片元素数 >= `Config.Performance.BatchQueryThreshold`（默认 10）时，先走一遍收集所有 DB 类字段（`db` / `dictTable` / `dictTableTwo`）的 key，每个字典分组一次 `IN (...)` 查询预热结果缓存，再做翻译。后端通过实现可选接口开启这些能力：
+
+| 后端 | 可选接口 | 开启 |
+| --- | --- | --- |
+| `DBTranslator` | `DBContextTranslator`、`DBBatchTranslator` | ctx、批量 |
+| `DictTableTranslator` / `DictTableTwoTranslator` | `DictTableContextTranslator`、`DictTableBatchTranslator`、`DictTableLoader` | ctx、批量、预加载 |
+| 任意 `Translator` | `ContextTranslator` | 收到 `WithContext` 的 ctx |
+
+`CreateDictTableTranslatorFromDB` / `CreateDictTableTwoTranslatorFromDB` 的返回值已全部实现（`QueryRowContext`、`IN` 查询、整表加载）。后端没实现批量接口时静默退回单 key 查询。
+
+**结果缓存。** DB 查询结果按类缓存（`EnableDBCache` / `ClearDBCache` / `EnableDictTableCache` …）。若 `Config.Cache.Enabled` 且设置了 `Config.Cache.CustomCache`（如实现了 `Cache` 接口的 Redis 适配器），结果写到那里，TTL 取 `Config.Cache.TTL`，key 前缀 `db:` / `dictTable:` / `dictTableTwo:`。注意 `Clear*Cache` 会调用 `CustomCache.Clear()`，即清掉共享的自定义缓存。
+
+**框架层。** `NewFramework(cfg).Init()` 按 `cfg.Performance.PreloadDicts` 通过 `DictTableLoader` 预加载（`fw.Preloaded(type, key)` 读取）；`fw.GetMetrics()["translate"]` 给出 `fw.Translate` 的次数 / 最小 / 最大 / 平均耗时与错误数。`NewDictManager()` 得到一个独立管理器（自己的字典、翻译器与配置缓存），适合多租户或测试隔离。
+
+### 用到的设计模式（面试可指着讲）
+- Strategy：`Translator` 接口，字典 / 枚举 / DB / 自定义各是一种策略
+- 可选接口升级：`ContextTranslator`、`*BatchTranslator`、`DictTableLoader`——实现了就用，不破坏老接口
+- Functional Options：`TranslateWith(v, WithContext(ctx), …)`
+- Decorator：结果缓存包在 DB 后端外面，`EnableXCache(false)` 即摘掉装饰器，`CustomCache` 可换 Redis
+- 两阶段（收集 → 执行）：`prefetchSlice` 收集 key，`BatchQueryOptimizer` 一次批量查询
+- Copy-on-Write：字典 / 翻译器 / 枚举注册表用 `atomic.Pointer`，读无锁
+- Registry / Facade（`Framework`）/ Chain of Responsibility（`Middleware`）/ Null Object（`noop` 配置、`emptyRegistry`）
+
 ## 并发与限制
 
 - `Translate` / `BatchTranslate` 可并发调用；`RegisterDict` / `RegisterEnum` / `RegisterTranslator` 也可以与翻译并发调用——注册表是写时复制（atomic.Pointer），读路径无锁，写会拷贝一份小 map，请在启动期完成注册。
@@ -392,15 +429,7 @@ dict.BatchTranslate(&items, true)
 - 翻译是尽力而为：字典不存在、目标字段不存在、目标不是 string 都会静默跳过，不报错；错误只来自翻译器本身（例如数据库查询失败）。
 - 并行批量翻译在第一个翻译器错误后停止其余 worker 并返回该错误，已翻译的元素保留结果。
 - 源字段支持 string 与整数类型，目标字段必须是 string。
-
-### 泛型入口
-
-```go
-_ = dict.TranslateOf(&user)          // 编译期保证是 *T
-_ = dict.BatchTranslateOf(items, true) // 编译期保证是 []*T
-```
-
-反射核心不能泛型化（struct tag 只能在运行时读取），泛型只在入口把 `ErrNotPointer` / `ErrNotSlice` 从运行时错误变成编译错误。
+- `WithParallel` / `BatchTranslate(..., true)`：被多个元素共享的**嵌套**指针目标只翻译一次（共享 visited 集）；但**同一指针作为顶层元素重复出现**时会被不同 worker 并发翻译，请先去重再并行。并行对 I/O 型翻译器（DB 查询）划算，纯内存字典通常顺序更快。
 
 ## Struct Tags 说明
 
