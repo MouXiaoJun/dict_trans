@@ -77,7 +77,7 @@ func TestRegisterTranslatorAfterFirstTranslate(t *testing.T) {
 		Code     string `translate:"late_tr" dictField:"CodeName"`
 		CodeName string
 	}
-	dm := newDictManager()
+	dm := NewDictManager()
 	r := &row{Code: "x"}
 	if err := dm.Translate(r); err != nil {
 		t.Fatal(err)
