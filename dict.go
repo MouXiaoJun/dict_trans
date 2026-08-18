@@ -1,3 +1,22 @@
+// Package dict translates coded struct fields into display text using struct tags.
+//
+// A field such as
+//
+//	Status string `dict:"status" dictField:"StatusName"`
+//
+// is looked up in the dictionary named "status" and the result is written into
+// the sibling field StatusName. Sources are in-memory dictionaries (RegisterDict),
+// enums (RegisterEnum), database dictionary tables (RegisterDictTableTranslator,
+// RegisterDictTableTwoTranslator, RegisterDBTranslator) or custom translators
+// (RegisterTranslator). Translate walks nested structs, pointers and slices;
+// BatchTranslate adds a parallel worker pool for large slices.
+//
+// Translation is best-effort: unknown dictionaries or missing target fields are
+// skipped silently; only translator errors (for example database failures) are
+// returned. All functions are safe for concurrent use; the registry is
+// copy-on-write, so register dictionaries at startup.
+//
+// The package has no dependencies outside the standard library.
 package dict
 
 import (
