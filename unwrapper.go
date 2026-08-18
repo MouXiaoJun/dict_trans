@@ -1,7 +1,5 @@
 package dict
 
-import "reflect"
-
 // UnWrapper 包装类型解包器接口
 // 用于处理 Page、Result 等包装类型，提取其中的实际数据
 type UnWrapper interface {
@@ -26,11 +24,6 @@ func RegisterUnWrapper(unwrapper UnWrapper) {
 
 // tryUnwrap 尝试解包
 func (dm *DictManager) tryUnwrap(v interface{}) (interface{}, bool) {
-	rv := reflect.ValueOf(v)
-	if rv.Kind() == reflect.Ptr {
-		rv = rv.Elem()
-	}
-
 	// 尝试所有解包器
 	for _, unwrapper := range dm.unwrappers {
 		if result, err := unwrapper.UnWrap(v); err == nil && result != nil {
