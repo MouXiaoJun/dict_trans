@@ -21,7 +21,7 @@ func main() {
 	}
 
 	// 注册数据库翻译器（实际项目中可以连接真实的数据库）
-	dict.RegisterDBTranslator(dict.DBTranslatorFunc(func(table, keyField, valueField string, key interface{}) (string, error) {
+	dict.RegisterDBTranslator(dict.DBTranslatorFunc(func(table, keyField, valueField string, key any) (string, error) {
 		// 将 key 转换为字符串
 		keyStr := fmt.Sprintf("%v", key)
 

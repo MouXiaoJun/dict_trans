@@ -134,7 +134,7 @@ func (p *CustomPlugin) Name() string {
     return "custom_plugin"
 }
 
-func (p *CustomPlugin) Init(config map[string]interface{}) error {
+func (p *CustomPlugin) Init(config map[string]any) error {
     // 初始化插件
     return nil
 }
@@ -312,7 +312,7 @@ func (f *CustomTranslatorFactory) Type() string {
     return "custom"
 }
 
-func (f *CustomTranslatorFactory) Create(config map[string]interface{}) (dict.Translator, error) {
+func (f *CustomTranslatorFactory) Create(config map[string]any) (dict.Translator, error) {
     // 根据配置创建翻译器
     return &CustomTranslator{}, nil
 }

@@ -128,7 +128,7 @@ var (
 
 func TestBatchTranslateParallelStopsOnError(t *testing.T) {
 	atomic.StoreInt64(&slowOkTranslated, 0)
-	RegisterTranslator("firstFails", TranslatorFunc(func(value interface{}, fieldName, tagValue string) (string, error) {
+	RegisterTranslator("firstFails", TranslatorFunc(func(value any, fieldName, tagValue string) (string, error) {
 		if value == "fail" {
 			return "", errFirstItem
 		}

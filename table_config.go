@@ -92,9 +92,9 @@ func DefaultDictDataTableConfig(tableName string) *TableConfig {
 }
 
 // BuildQuery 构建查询 SQL
-func (tc *TableConfig) BuildQuery(dictType string) (string, []interface{}) {
+func (tc *TableConfig) BuildQuery(dictType string) (string, []any) {
 	query := "SELECT " + tc.Fields.ValueField + " FROM " + tc.TableName + " WHERE "
-	args := []interface{}{}
+	args := []any{}
 
 	// 添加类型条件（如果有）
 	if tc.Fields.TypeField != "" {
@@ -115,9 +115,9 @@ func (tc *TableConfig) BuildQuery(dictType string) (string, []interface{}) {
 }
 
 // BuildQueryWithKey 构建带键的查询 SQL
-func (tc *TableConfig) BuildQueryWithKey(dictType, dictKey string) (string, []interface{}) {
+func (tc *TableConfig) BuildQueryWithKey(dictType, dictKey string) (string, []any) {
 	query := "SELECT " + tc.Fields.ValueField + " FROM " + tc.TableName + " WHERE "
-	args := []interface{}{}
+	args := []any{}
 
 	// 添加类型条件（如果有）
 	if tc.Fields.TypeField != "" {
@@ -147,9 +147,9 @@ func (tc *TableConfig) BuildQueryWithKey(dictType, dictKey string) (string, []in
 }
 
 // BuildTypeCheckQuery 构建类型检查查询（用于双表字典）
-func (tc *TableConfig) BuildTypeCheckQuery(dictTypeCode string) (string, []interface{}) {
+func (tc *TableConfig) BuildTypeCheckQuery(dictTypeCode string) (string, []any) {
 	query := "SELECT COUNT(1) FROM " + tc.TableName + " WHERE "
-	args := []interface{}{}
+	args := []any{}
 
 	// 类型字段（通常是 dict_type_code）
 	if tc.Fields.TypeField != "" {

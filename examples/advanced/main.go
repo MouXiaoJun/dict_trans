@@ -21,7 +21,7 @@ func main() {
 	})
 
 	// 注册自定义翻译器
-	dict.RegisterTranslator("custom", dict.TranslatorFunc(func(value interface{}, fieldName string, tagValue string) (string, error) {
+	dict.RegisterTranslator("custom", dict.TranslatorFunc(func(value any, fieldName string, tagValue string) (string, error) {
 		// 这里可以实现从 Redis、数据库等获取翻译
 		return fmt.Sprintf("自定义翻译: %v", value), nil
 	}))

@@ -63,7 +63,7 @@ func TestRegisterAndTranslateConcurrently(t *testing.T) {
 		go func() { defer wg.Done(); RegisterDict("race_status", map[string]string{"1": "ok"}) }()
 		go func() {
 			defer wg.Done()
-			RegisterTranslator("race_kind", TranslatorFunc(func(v interface{}, _ string, _ string) (string, error) { return "k", nil }))
+			RegisterTranslator("race_kind", TranslatorFunc(func(v any, _ string, _ string) (string, error) { return "k", nil }))
 		}()
 		go func() { defer wg.Done(); _ = Translate(&row{Status: "1", Kind: "x"}) }()
 	}
@@ -85,7 +85,7 @@ func TestRegisterTranslatorAfterFirstTranslate(t *testing.T) {
 	if r.CodeName != "" {
 		t.Fatalf("未注册翻译器时不应翻译，得到 %q", r.CodeName)
 	}
-	dm.RegisterTranslator("late_tr", TranslatorFunc(func(v interface{}, _ string, _ string) (string, error) { return "late-" + v.(string), nil }))
+	dm.RegisterTranslator("late_tr", TranslatorFunc(func(v any, _ string, _ string) (string, error) { return "late-" + v.(string), nil }))
 	r2 := &row{Code: "x"}
 	if err := dm.Translate(r2); err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ type chainNode struct {
 // #1 回归：父子链切片（每个元素指向前一个）应是 O(n)：翻译器调用次数 ≤ 2n，而不是 n²/2
 func TestTranslateSliceSharedPointersLinear(t *testing.T) {
 	var calls int64
-	RegisterTranslator("chain_count", TranslatorFunc(func(v interface{}, _ string, _ string) (string, error) {
+	RegisterTranslator("chain_count", TranslatorFunc(func(v any, _ string, _ string) (string, error) {
 		atomic.AddInt64(&calls, 1)
 		return "x", nil
 	}))

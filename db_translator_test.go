@@ -14,7 +14,7 @@ func TestDBTranslator(t *testing.T) {
 	}
 
 	// 注册数据库翻译器
-	RegisterDBTranslator(DBTranslatorFunc(func(table, keyField, valueField string, key interface{}) (string, error) {
+	RegisterDBTranslator(DBTranslatorFunc(func(table, keyField, valueField string, key any) (string, error) {
 		// 模拟数据库查询
 		keyStr := ""
 		switch v := key.(type) {
@@ -73,7 +73,7 @@ func TestDBTranslatorFullFormat(t *testing.T) {
 	}
 
 	// 注册数据库翻译器
-	RegisterDBTranslator(DBTranslatorFunc(func(table, keyField, valueField string, key interface{}) (string, error) {
+	RegisterDBTranslator(DBTranslatorFunc(func(table, keyField, valueField string, key any) (string, error) {
 		keyStr := ""
 		switch v := key.(type) {
 		case string:
@@ -114,7 +114,7 @@ func TestDBCache(t *testing.T) {
 	queryCount := 0
 
 	// 注册数据库翻译器，记录查询次数
-	RegisterDBTranslator(DBTranslatorFunc(func(table, keyField, valueField string, key interface{}) (string, error) {
+	RegisterDBTranslator(DBTranslatorFunc(func(table, keyField, valueField string, key any) (string, error) {
 		queryCount++
 		return "结果", nil
 	}))

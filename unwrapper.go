@@ -6,14 +6,14 @@ type UnWrapper interface {
 	// UnWrap 解包方法
 	// value: 包装类型的值
 	// 返回: 解包后的实际数据（通常是切片或结构体）
-	UnWrap(value interface{}) (interface{}, error)
+	UnWrap(value any) (any, error)
 }
 
 // UnWrapperFunc 解包器函数类型
-type UnWrapperFunc func(value interface{}) (interface{}, error)
+type UnWrapperFunc func(value any) (any, error)
 
 // UnWrap 实现 UnWrapper 接口
-func (f UnWrapperFunc) UnWrap(value interface{}) (interface{}, error) {
+func (f UnWrapperFunc) UnWrap(value any) (any, error) {
 	return f(value)
 }
 
@@ -23,7 +23,7 @@ func RegisterUnWrapper(unwrapper UnWrapper) {
 }
 
 // tryUnwrap 尝试解包
-func (dm *DictManager) tryUnwrap(v interface{}) (interface{}, bool) {
+func (dm *DictManager) tryUnwrap(v any) (any, bool) {
 	// 尝试所有解包器
 	for _, unwrapper := range dm.unwrappers {
 		if result, err := unwrapper.UnWrap(v); err == nil && result != nil {

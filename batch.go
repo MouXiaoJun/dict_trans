@@ -8,12 +8,12 @@ import (
 // BatchTranslate 批量翻译（支持并行处理）
 // items: 要翻译的切片
 // parallel: 是否并行处理（默认 false，保持向后兼容）
-func BatchTranslate(items interface{}, parallel bool) error {
+func BatchTranslate(items any, parallel bool) error {
 	return defaultManager.BatchTranslate(items, parallel)
 }
 
 // BatchTranslate 批量翻译（实例方法）
-func (dm *DictManager) BatchTranslate(items interface{}, parallel bool) error {
+func (dm *DictManager) BatchTranslate(items any, parallel bool) error {
 	rv := reflect.ValueOf(items)
 	if rv.Kind() != reflect.Ptr {
 		return ErrNotPointer

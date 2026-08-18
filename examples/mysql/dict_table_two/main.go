@@ -111,7 +111,7 @@ func main() {
 	fmt.Println("\n【示例7】混合使用（双表字典+数据库表）")
 
 	// 注册数据库翻译器（用于查询用户表）
-	dict.RegisterDBTranslator(dict.DBTranslatorFunc(func(table, keyField, valueField string, key interface{}) (string, error) {
+	dict.RegisterDBTranslator(dict.DBTranslatorFunc(func(table, keyField, valueField string, key any) (string, error) {
 		query := fmt.Sprintf("SELECT %s FROM %s WHERE %s = ?", valueField, table, keyField)
 		var result string
 		err := db.QueryRow(query, key).Scan(&result)

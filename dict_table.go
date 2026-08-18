@@ -56,7 +56,7 @@ func ClearDictTableCache() {
 
 // createDictTableTranslator 创建字典表翻译器实例
 func createDictTableTranslator(dictType string) Translator {
-	return TranslatorFunc(func(value interface{}, fieldName string, tagValue string) (string, error) {
+	return TranslatorFunc(func(value any, fieldName string, tagValue string) (string, error) {
 		manager := defaultDictTableManager
 
 		// 将 value 转换为字符串

@@ -31,7 +31,7 @@ func main() {
 	fmt.Printf("✓ 数据库连接成功\n\n")
 
 	// 注册数据库翻译器
-	dict.RegisterDBTranslator(dict.DBTranslatorFunc(func(table, keyField, valueField string, key interface{}) (string, error) {
+	dict.RegisterDBTranslator(dict.DBTranslatorFunc(func(table, keyField, valueField string, key any) (string, error) {
 		// 构建 SQL 查询
 		query := fmt.Sprintf("SELECT %s FROM %s WHERE %s = ?", valueField, table, keyField)
 
