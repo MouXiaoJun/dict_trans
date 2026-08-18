@@ -73,8 +73,10 @@ func (dm *DictManager) updateReg(fn func(*registry)) {
 	dm.reg.Store(next)
 }
 
-// newDictManager 创建管理器
-func newDictManager() *DictManager {
+// NewDictManager 创建一个独立的字典管理器：有自己的字典 / 翻译器注册表与配置缓存，
+// 适合需要隔离的场景（多租户、测试）。包级函数使用内部的默认管理器。
+// 注意：DB / 字典表翻译的结果缓存仍是进程级的（围绕用户注册的后端），不随管理器隔离。
+func NewDictManager() *DictManager {
 	return &DictManager{
 		unwrappers:  make([]UnWrapper, 0),
 		configCache: make(map[reflect.Type]*structConfig),
@@ -122,7 +124,7 @@ func (seen *visited) mark(rv reflect.Value) bool {
 	return true
 }
 
-var defaultManager = newDictManager()
+var defaultManager = NewDictManager()
 
 // structConfig 结构体配置缓存
 type structConfig struct {

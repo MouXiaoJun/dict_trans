@@ -55,6 +55,10 @@ func TestDictTableTranslator(t *testing.T) {
 }
 
 func TestDictTableCache(t *testing.T) {
+	// 结果缓存与开关都是包级的，先复位，-count>1 才互不污染
+	EnableDictTableCache(true)
+	ClearDictTableCache()
+	t.Cleanup(func() { EnableDictTableCache(true) })
 	queryCount := 0
 
 	// 注册字典表翻译器，记录查询次数

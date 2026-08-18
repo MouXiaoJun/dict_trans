@@ -111,6 +111,10 @@ func TestDBTranslatorFullFormat(t *testing.T) {
 }
 
 func TestDBCache(t *testing.T) {
+	// 结果缓存与开关都是包级的，先复位，-count>1 才互不污染
+	EnableDBCache(true)
+	ClearDBCache()
+	t.Cleanup(func() { EnableDBCache(true) })
 	queryCount := 0
 
 	// 注册数据库翻译器，记录查询次数

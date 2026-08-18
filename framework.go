@@ -22,7 +22,7 @@ func NewFramework(config *Config) *Framework {
 
 	return &Framework{
 		config:     config,
-		manager:    newDictManager(),
+		manager:    NewDictManager(),
 		optimizer:  NewBatchQueryOptimizer(),
 		preloader:  NewPreloadManager(),
 		monitor:    NewPerformanceMonitor(),

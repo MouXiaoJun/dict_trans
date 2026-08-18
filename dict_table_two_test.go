@@ -64,6 +64,10 @@ func TestDictTableTwoTranslator(t *testing.T) {
 }
 
 func TestDictTableTwoCache(t *testing.T) {
+	// 结果缓存与开关都是包级的，先复位，-count>1 才互不污染
+	EnableDictTableTwoCache(true)
+	ClearDictTableTwoCache()
+	t.Cleanup(func() { EnableDictTableTwoCache(true) })
 	queryCount := 0
 
 	// 注册双表字典翻译器，记录查询次数
