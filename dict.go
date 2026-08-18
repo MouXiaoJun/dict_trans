@@ -4,33 +4,117 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // DictManager 字典管理器
 type DictManager struct {
-	dicts       map[string]map[string]string   // 字典存储: dictName -> {key: value}
-	translators map[string]Translator          // 自定义翻译器: tagName -> Translator
+	reg         atomic.Pointer[registry]       // 字典 / 翻译器注册表（写时复制，读路径无锁）
+	regWrite    sync.Mutex                     // 串行化注册表写者
 	unwrappers  []UnWrapper                    // 包装类型解包器
 	configCache map[reflect.Type]*structConfig // 配置缓存
 	configMutex sync.RWMutex                   // 配置缓存互斥锁
 }
 
-var defaultManager = &DictManager{
-	dicts:       make(map[string]map[string]string),
-	translators: make(map[string]Translator),
-	unwrappers:  make([]UnWrapper, 0),
-	configCache: make(map[reflect.Type]*structConfig),
+// registry 字典与自定义翻译器注册表。读多写少（注册在启动期、翻译在热路径），
+// 用 atomic.Pointer 做写时复制：读是一次原子 Load，不与其他 goroutine 争锁；
+// 写在 regWrite 下拷贝一份再 Store。
+// ponytail: 每次注册全量拷贝两张小 map，注册次数少可接受。
+type registry struct {
+	dicts       map[string]map[string]string // dictName -> {key: value}
+	translators map[string]Translator        // tagName -> Translator
 }
+
+var emptyRegistry = &registry{}
+
+// loadReg 读取当前注册表（未注册过时返回空表）
+func (dm *DictManager) loadReg() *registry {
+	if r := dm.reg.Load(); r != nil {
+		return r
+	}
+	return emptyRegistry
+}
+
+// updateReg 写时复制地更新注册表
+func (dm *DictManager) updateReg(fn func(*registry)) {
+	dm.regWrite.Lock()
+	defer dm.regWrite.Unlock()
+	old := dm.loadReg()
+	next := &registry{
+		dicts:       make(map[string]map[string]string, len(old.dicts)+1),
+		translators: make(map[string]Translator, len(old.translators)+1),
+	}
+	for k, v := range old.dicts {
+		next.dicts[k] = v
+	}
+	for k, v := range old.translators {
+		next.translators[k] = v
+	}
+	fn(next)
+	dm.reg.Store(next)
+}
+
+// newDictManager 创建管理器
+func newDictManager() *DictManager {
+	return &DictManager{
+		unwrappers:  make([]UnWrapper, 0),
+		configCache: make(map[reflect.Type]*structConfig),
+	}
+}
+
+// visited 记录一次翻译过程中已进入过的指针目标，防止自引用/环形结构无限递归。
+// 只有经指针到达的结构体才需要记录（值类型嵌套不可能成环），map 惰性分配，无指针的常见场景零开销。
+// 以 (地址, 类型) 为键：外层结构体与其第一个字段地址相同，只用地址会误判。
+// 每次顶层翻译私有，不放在 DictManager 上。
+type visited struct {
+	small [4]visitKey // 前几个指针目标放栈上，常见 DTO 不碰堆
+	n     int
+	m     map[visitKey]struct{} // 溢出后才分配
+}
+
+type visitKey struct {
+	addr uintptr
+	typ  reflect.Type
+}
+
+// mark 记录一个指针目标；已记录过返回 false（调用方跳过）。
+func (seen *visited) mark(rv reflect.Value) bool {
+	if !rv.CanAddr() {
+		return true
+	}
+	key := visitKey{addr: rv.UnsafeAddr(), typ: rv.Type()}
+	for i := 0; i < seen.n; i++ {
+		if seen.small[i] == key {
+			return false
+		}
+	}
+	if _, ok := seen.m[key]; ok {
+		return false
+	}
+	if seen.n < len(seen.small) {
+		seen.small[seen.n] = key
+		seen.n++
+		return true
+	}
+	if seen.m == nil {
+		seen.m = make(map[visitKey]struct{})
+	}
+	seen.m[key] = struct{}{}
+	return true
+}
+
+var defaultManager = newDictManager()
 
 // structConfig 结构体配置缓存
 type structConfig struct {
-	fields []fieldConfig
+	fields  []fieldConfig
+	byIndex []*fieldConfig // 按字段下标预建的索引，长度 = NumField，无配置处为 nil
+	noop    bool           // 没有任何可设置字段（如 time.Time），翻译时直接跳过、不记 visited
 }
 
 // fieldConfig 字段配置
 type fieldConfig struct {
 	fieldIndex       int
-	sourceField      string
 	targetField      string
 	targetFieldIndex int // 缓存目标字段索引，避免每次查找
 	translatorTag    string
@@ -39,12 +123,12 @@ type fieldConfig struct {
 
 // RegisterDict 注册字典
 func RegisterDict(name string, dict map[string]string) {
-	defaultManager.dicts[name] = dict
+	defaultManager.RegisterDict(name, dict)
 }
 
 // GetDict 获取字典
 func GetDict(name string) map[string]string {
-	return defaultManager.dicts[name]
+	return defaultManager.GetDict(name)
 }
 
 // Translate 翻译结构体
@@ -54,7 +138,27 @@ func Translate(v interface{}) error {
 
 // RegisterTranslator 注册自定义翻译器
 func RegisterTranslator(tagName string, translator Translator) {
-	defaultManager.translators[tagName] = translator
+	defaultManager.RegisterTranslator(tagName, translator)
+}
+
+// RegisterDict 注册字典（实例方法，并发安全）
+func (dm *DictManager) RegisterDict(name string, dict map[string]string) {
+	dm.updateReg(func(r *registry) { r.dicts[name] = dict })
+}
+
+// GetDict 获取字典（实例方法，并发安全）
+func (dm *DictManager) GetDict(name string) map[string]string {
+	return dm.loadReg().dicts[name]
+}
+
+// RegisterTranslator 注册自定义翻译器（实例方法，并发安全）。
+// 结构体配置缓存里固化了翻译器实例，注册后清空缓存，保证已翻译过的类型也能拿到新翻译器。
+func (dm *DictManager) RegisterTranslator(tagName string, translator Translator) {
+	dm.updateReg(func(r *registry) { r.translators[tagName] = translator })
+
+	dm.configMutex.Lock()
+	dm.configCache = make(map[reflect.Type]*structConfig)
+	dm.configMutex.Unlock()
 }
 
 // Translate 翻译结构体（实例方法）
@@ -83,17 +187,51 @@ func (dm *DictManager) Translate(v interface{}) error {
 	return dm.translateStruct(rv)
 }
 
-// translateStruct 翻译结构体
+// translateStruct 翻译顶层结构体（私有一份 visited）
 func (dm *DictManager) translateStruct(rv reflect.Value) error {
+	return dm.translateStructV(rv, &visited{}, false)
+}
+
+// translateSlice 翻译顶层切片：整个切片共享一份 visited。
+// 顶层元素本身不记 visited（平铺 []*Row 零开销），只记从元素内部经指针到达的目标，
+// 所以父子链 / 树形数据里被多个元素共享的子图只走一次，总体 O(n) 而不是 O(n²)。
+func (dm *DictManager) translateSlice(sliceValue reflect.Value) error {
+	seen := &visited{}
+	for i := 0; i < sliceValue.Len(); i++ {
+		elem, ok := sliceElemStruct(sliceValue.Index(i))
+		if !ok {
+			continue
+		}
+		if err := dm.translateStructV(elem, seen, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sliceElemStruct 取切片元素指向的结构体（解一层指针，nil 跳过）
+func sliceElemStruct(elem reflect.Value) (reflect.Value, bool) {
+	if elem.Kind() == reflect.Ptr {
+		if elem.IsNil() {
+			return elem, false
+		}
+		elem = elem.Elem()
+	}
+	return elem, elem.Kind() == reflect.Struct
+}
+
+// translateStructV 翻译结构体。viaPtr=true 表示 rv 是经指针到达的目标，需要记 visited 防环；
+// 值类型嵌套不可能成环，不记。
+func (dm *DictManager) translateStructV(rv reflect.Value, seen *visited, viaPtr bool) error {
 	rt := rv.Type()
 
-	// 获取或创建配置缓存
+	// 获取或创建配置缓存（含按字段下标预建的索引）
 	config := dm.getOrCreateConfig(rt)
-
-	// 创建字段配置映射，方便快速查找
-	fieldConfigMap := make(map[int]*fieldConfig)
-	for i := range config.fields {
-		fieldConfigMap[config.fields[i].fieldIndex] = &config.fields[i]
+	if config.noop {
+		return nil
+	}
+	if viaPtr && !seen.mark(rv) {
+		return nil
 	}
 
 	// 遍历所有字段（不仅仅是配置中的字段，因为嵌套结构体可能没有翻译标签）
@@ -108,15 +246,15 @@ func (dm *DictManager) translateStruct(rv reflect.Value) error {
 
 		// 处理嵌套结构体（先处理嵌套，再处理当前字段的翻译）
 		if field.Kind() == reflect.Struct {
-			if err := dm.translateStruct(field); err != nil {
+			if err := dm.translateStructV(field, seen, false); err != nil {
 				return err
 			}
 		}
 
-		// 处理指针类型的嵌套结构体
+		// 处理指针类型的嵌套结构体（指针目标可能成环，viaPtr=true 记 visited）
 		if field.Kind() == reflect.Ptr && !field.IsNil() {
-			if field.Elem().Kind() == reflect.Struct {
-				if err := dm.translateStruct(field.Elem()); err != nil {
+			if target := field.Elem(); target.Kind() == reflect.Struct {
+				if err := dm.translateStructV(target, seen, true); err != nil {
 					return err
 				}
 			}
@@ -124,20 +262,20 @@ func (dm *DictManager) translateStruct(rv reflect.Value) error {
 
 		// 处理切片中的结构体
 		if field.Kind() == reflect.Slice {
-			if err := dm.translateSlice(field); err != nil {
+			if err := dm.translateSliceV(field, seen); err != nil {
 				return err
 			}
 		}
 
 		// 处理翻译标签（dict, enum, translator等）
-		if fieldCfg, ok := fieldConfigMap[i]; ok {
+		if fieldCfg := config.byIndex[i]; fieldCfg != nil {
 			if fieldCfg.translator != nil {
 				if err := dm.translateFieldWithTranslator(field, fieldType, *fieldCfg, rv); err != nil {
 					return err
 				}
 			} else if fieldCfg.translatorTag != "" {
 				// 兼容旧的 dict 标签
-				if err := dm.translateField(field, fieldType, fieldCfg.translatorTag, rv); err != nil {
+				if err := dm.translateField(field, fieldType, *fieldCfg, rv); err != nil {
 					return err
 				}
 			}
@@ -193,7 +331,7 @@ func (dm *DictManager) getOrCreateConfig(rt reflect.Type) *structConfig {
 			// 自定义翻译器
 			parts := strings.Split(translateTag, ",")
 			tagName := parts[0]
-			if translator, ok := dm.translators[tagName]; ok {
+			if translator, ok := dm.loadReg().translators[tagName]; ok {
 				fieldCfg.translator = translator
 				fieldCfg.translatorTag = translateTag
 			}
@@ -239,37 +377,49 @@ func (dm *DictManager) getOrCreateConfig(rt reflect.Type) *structConfig {
 		}
 	}
 
+	// 按字段下标预建索引，避免每次翻译都重建 map
+	config.byIndex = make([]*fieldConfig, rt.NumField())
+	for i := range config.fields {
+		config.byIndex[config.fields[i].fieldIndex] = &config.fields[i]
+	}
+
+	// 没有导出字段的结构体（time.Time 等）翻译时什么都做不了，标记为 noop
+	config.noop = true
+	for i := 0; i < rt.NumField(); i++ {
+		if rt.Field(i).IsExported() {
+			config.noop = false
+			break
+		}
+	}
+
 	dm.configCache[rt] = config
 	return config
 }
 
-// translateSlice 翻译切片
-func (dm *DictManager) translateSlice(sliceValue reflect.Value) error {
+// translateSliceV 翻译嵌套切片（共享父结构体的 visited，因为元素可能指回父节点）
+func (dm *DictManager) translateSliceV(sliceValue reflect.Value, seen *visited) error {
 	for i := 0; i < sliceValue.Len(); i++ {
-		elem := sliceValue.Index(i)
-		if elem.Kind() == reflect.Ptr {
-			if elem.IsNil() {
-				continue
-			}
-			elem = elem.Elem()
+		raw := sliceValue.Index(i)
+		elem, ok := sliceElemStruct(raw)
+		if !ok {
+			continue
 		}
-		if elem.Kind() == reflect.Struct {
-			if err := dm.translateStruct(elem); err != nil {
-				return err
-			}
+		// 指针元素才可能成环，viaPtr 交给 translateStructV 记 visited
+		if err := dm.translateStructV(elem, seen, raw.Kind() == reflect.Ptr); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
 // translateField 翻译字段
-func (dm *DictManager) translateField(field reflect.Value, fieldType reflect.StructField, dictTag string, structValue reflect.Value) error {
+func (dm *DictManager) translateField(field reflect.Value, fieldType reflect.StructField, fieldCfg fieldConfig, structValue reflect.Value) error {
 	// 解析标签
-	tagParts := strings.Split(dictTag, ",")
+	tagParts := strings.Split(fieldCfg.translatorTag, ",")
 	dictName := tagParts[0]
 
-	// 获取字典
-	dict := dm.dicts[dictName]
+	// 获取字典（原子读注册表快照，无锁）
+	dict := dm.loadReg().dicts[dictName]
 	if dict == nil {
 		return nil // 字典不存在，跳过
 	}
@@ -291,12 +441,21 @@ func (dm *DictManager) translateField(field reflect.Value, fieldType reflect.Str
 	}
 
 	// 获取目标字段名
-	dictFieldTag := fieldType.Tag.Get("dictField")
+	dictFieldTag := fieldCfg.targetField
 	if dictFieldTag == "" {
 		return nil
 	}
 
-	// 在同一结构体中查找目标字段
+	// 优先使用缓存的字段索引（O(1)）
+	if fieldCfg.targetFieldIndex >= 0 {
+		targetField := structValue.Field(fieldCfg.targetFieldIndex)
+		if targetField.CanSet() && targetField.Kind() == reflect.String {
+			targetField.SetString(translatedValue)
+			return nil
+		}
+	}
+
+	// 回退到遍历查找
 	structType := structValue.Type()
 	for i := 0; i < structType.NumField(); i++ {
 		structField := structType.Field(i)
