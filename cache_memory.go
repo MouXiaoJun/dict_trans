@@ -27,17 +27,20 @@ func NewMemoryCache(maxEntries int) Cache {
 
 func (c *memoryCache) Get(key string) (string, bool) {
 	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
 	item, ok := c.data[key]
+	c.mutex.RUnlock()
 	if !ok {
 		return "", false
 	}
 
 	// 检查是否过期
 	if item.expiresAt != nil && time.Now().After(*item.expiresAt) {
-		// 异步删除过期项
-		go c.Delete(key)
+		// 同步删除过期项：升级为写锁后双重检查，避免误删并发 Set 写入的新值
+		c.mutex.Lock()
+		if cur, ok := c.data[key]; ok && cur.expiresAt != nil && time.Now().After(*cur.expiresAt) {
+			delete(c.data, key)
+		}
+		c.mutex.Unlock()
 		return "", false
 	}
 
@@ -48,9 +51,9 @@ func (c *memoryCache) Set(key string, value string, ttl int) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	// 检查最大条目数
-	if len(c.data) >= c.maxEntries {
-		// 简单的LRU策略：删除第一个（实际应该用更复杂的LRU）
+	// 检查最大条目数（maxEntries <= 0 表示不限制）
+	// ponytail: 满时随机淘汰一个，需要命中率时再换 LRU
+	if _, exists := c.data[key]; !exists && c.maxEntries > 0 && len(c.data) >= c.maxEntries {
 		for k := range c.data {
 			delete(c.data, k)
 			break
