@@ -323,10 +323,7 @@ func TranslateWithOptions(v interface{}, options *TranslateOptions) error {
 
 // TranslateWithOptions 使用选项翻译（实例方法）
 func (dm *DictManager) TranslateWithOptions(v interface{}, options *TranslateOptions) error {
-	if options == nil {
-		options = &TranslateOptions{}
-	}
-
+	// ponytail: options 目前只由 Framework.Translate 用于策略分发，这里暂未消费；需要时再接
 	// 应用中间件
 	ctx := &TranslateContext{
 		Metadata: make(map[string]interface{}),

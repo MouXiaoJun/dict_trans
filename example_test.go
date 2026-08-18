@@ -22,7 +22,7 @@ func ExampleTranslate() {
 
 	// 翻译
 	user := User{Sex: "1"}
-	dict.Translate(&user)
+	_ = dict.Translate(&user)
 	fmt.Println(user.SexName)
 	// Output: 男
 }
