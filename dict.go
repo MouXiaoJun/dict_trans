@@ -94,6 +94,7 @@ func NewDictManager() *DictManager {
 type walk struct {
 	ctx     context.Context
 	collect map[*lookupTranslator][]string
+	mu      *sync.Mutex // 并行批量时多个 worker 共享一份 walk，用它保护 visited 集；顺序翻译为 nil
 	small   [4]visitKey // 前几个指针目标放栈上，常见 DTO 不碰堆
 	n       int
 	m       map[visitKey]struct{} // 溢出后才分配
@@ -108,6 +109,10 @@ type visitKey struct {
 func (seen *walk) mark(rv reflect.Value) bool {
 	if !rv.CanAddr() {
 		return true
+	}
+	if seen.mu != nil {
+		seen.mu.Lock()
+		defer seen.mu.Unlock()
 	}
 	key := visitKey{addr: rv.UnsafeAddr(), typ: rv.Type()}
 	for i := 0; i < seen.n; i++ {
@@ -262,11 +267,6 @@ func (dm *DictManager) translateSliceOpts(sliceValue reflect.Value, o *translate
 		return dm.batchTranslateParallel(sliceValue, o.ctx)
 	}
 	return dm.translateSlice(sliceValue, o.ctx)
-}
-
-// translateStruct 翻译顶层结构体（私有一份 walk）
-func (dm *DictManager) translateStruct(rv reflect.Value) error {
-	return dm.translateStructV(rv, &walk{}, false)
 }
 
 // translateSlice 翻译顶层切片：整个切片共享一份 visited。

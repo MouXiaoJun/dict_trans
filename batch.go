@@ -53,6 +53,12 @@ func (dm *DictManager) batchTranslateParallel(sliceValue reflect.Value, ctx cont
 	done := make(chan struct{})
 	var closeOnce sync.Once
 
+	// 所有 worker 共享一份 visited（带锁）：被多个元素共享的嵌套指针目标只由一个 worker 翻译，
+	// 避免两个 goroutine 同时写同一个字段。顶层元素本身不记（平铺 []*Row 不碰锁）——
+	// 同一指针作为顶层元素重复出现时会被并发翻译，调用方需自行去重（见 README 限制）。
+	// ponytail: 单把互斥锁，只在 mark 嵌套指针目标时持有；成为瓶颈再分片
+	shared := &walk{ctx: ctx, mu: &sync.Mutex{}}
+
 	// 每个 worker 处理一部分数据
 	chunkSize := (length + workerCount - 1) / workerCount
 
@@ -70,7 +76,6 @@ func (dm *DictManager) batchTranslateParallel(sliceValue reflect.Value, ctx cont
 		wg.Add(1)
 		go func(start, end int) {
 			defer wg.Done()
-			seen := &walk{ctx: ctx} // 每个 worker 一份：本 chunk 内共享的指针目标只走一次
 
 			// 处理这个区间的数据
 			for j := start; j < end; j++ {
@@ -81,19 +86,14 @@ func (dm *DictManager) batchTranslateParallel(sliceValue reflect.Value, ctx cont
 					return
 				default:
 				}
-				elem := sliceValue.Index(j)
-				if elem.Kind() == reflect.Ptr {
-					if elem.IsNil() {
-						continue
-					}
-					elem = elem.Elem()
+				elem, ok := sliceElemStruct(sliceValue.Index(j))
+				if !ok {
+					continue
 				}
-				if elem.Kind() == reflect.Struct {
-					if err := dm.translateStructV(elem, seen, false); err != nil {
-						errChan <- err
-						closeOnce.Do(func() { close(done) })
-						return
-					}
+				if err := dm.translateStructV(elem, shared, false); err != nil {
+					errChan <- err
+					closeOnce.Do(func() { close(done) })
+					return
 				}
 			}
 		}(start, end)

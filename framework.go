@@ -10,6 +10,7 @@ import (
 type Framework struct {
 	config     *Config
 	manager    *DictManager
+	cache      Cache // Init 时自动创建的内存缓存（用户未提供 CustomCache 时）
 	preloader  *PreloadManager
 	monitor    *PerformanceMonitor
 	Strategies *StrategyManager
@@ -32,15 +33,11 @@ func NewFramework(config *Config) *Framework {
 
 // Init 初始化框架
 func (f *Framework) Init() error {
-	// 初始化缓存
-	if f.config.Cache.Enabled {
-		if f.config.Cache.CustomCache != nil {
-			// 使用自定义缓存
-		} else {
-			// 使用默认内存缓存
-			cache := NewMemoryCache(f.config.Cache.MaxEntries)
-			f.config.Cache.CustomCache = cache
-		}
+	// 初始化缓存：用户没给 CustomCache 时创建一个内存缓存挂在框架上（f.cache），
+	// 不写回 config——只有用户显式设置的 Config.Cache.CustomCache 才会被 DB 结果缓存使用，
+	// 否则三类 DB 缓存各自独立、ClearDBCache 不会波及 dictTable。
+	if f.config.Cache.Enabled && f.config.Cache.CustomCache == nil && f.cache == nil {
+		f.cache = NewMemoryCache(f.config.Cache.MaxEntries)
 	}
 
 	// 初始化插件
@@ -120,6 +117,9 @@ func (f *Framework) GetMetrics() map[string]*Metric {
 func (f *Framework) ClearCache() error {
 	if f.config.Cache.CustomCache != nil {
 		return f.config.Cache.CustomCache.Clear()
+	}
+	if f.cache != nil {
+		return f.cache.Clear()
 	}
 	return nil
 }

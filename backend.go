@@ -245,7 +245,7 @@ func RegisterDBTranslator(translator DBTranslator) {
 // EnableDBCache 启用 / 禁用数据库翻译结果缓存
 func EnableDBCache(enabled bool) { defaultDBTranslatorManager.cache.enabled.Store(enabled) }
 
-// ClearDBCache 清空数据库翻译结果缓存
+// ClearDBCache 清空数据库翻译结果缓存。若配置了 Config.Cache.CustomCache，会调用它的 Clear（Cache 接口无按前缀清理，三类共用时会一起清空）
 func ClearDBCache() { defaultDBTranslatorManager.cache.clear() }
 
 func createDBTranslator(table, keyField, valueField string) Translator {
@@ -280,7 +280,7 @@ func RegisterDictTableTranslator(translator DictTableTranslator) {
 // EnableDictTableCache 启用 / 禁用字典表翻译结果缓存
 func EnableDictTableCache(enabled bool) { defaultDictTableManager.cache.enabled.Store(enabled) }
 
-// ClearDictTableCache 清空字典表翻译结果缓存
+// ClearDictTableCache 清空字典表翻译结果缓存。若配置了 Config.Cache.CustomCache，会调用它的 Clear（Cache 接口无按前缀清理，三类共用时会一起清空）
 func ClearDictTableCache() { defaultDictTableManager.cache.clear() }
 
 func createDictTableTranslator(dictType string) Translator {
@@ -295,7 +295,7 @@ func RegisterDictTableTwoTranslator(translator DictTableTwoTranslator) {
 // EnableDictTableTwoCache 启用 / 禁用双表字典翻译结果缓存
 func EnableDictTableTwoCache(enabled bool) { defaultDictTableTwoManager.cache.enabled.Store(enabled) }
 
-// ClearDictTableTwoCache 清空双表字典翻译结果缓存
+// ClearDictTableTwoCache 清空双表字典翻译结果缓存。若配置了 Config.Cache.CustomCache，会调用它的 Clear（Cache 接口无按前缀清理，三类共用时会一起清空）
 func ClearDictTableTwoCache() { defaultDictTableTwoManager.cache.clear() }
 
 func createDictTableTwoTranslator(dictTypeCode string) Translator {

@@ -147,3 +147,26 @@ func TestRegisterEnumAndTranslateConcurrently(t *testing.T) {
 		t.Fatalf("enum 翻译失败: err=%v name=%q", err, r.StatusName)
 	}
 }
+
+// 并行批量：多个元素共享同一个子对象（落在不同 worker 的 chunk）不能被两个 goroutine 同时翻译（-race）
+func TestParallelSharedChildTranslatedOnce(t *testing.T) {
+	type child struct {
+		Status     string `dict:"shared_child" dictField:"StatusName"`
+		StatusName string
+	}
+	type parent struct {
+		Kid *child
+	}
+	RegisterDict("shared_child", map[string]string{"1": "ok"})
+	kid := &child{Status: "1"}
+	items := make([]parent, 100)
+	for i := range items {
+		items[i].Kid = kid
+	}
+	if err := BatchTranslate(&items, true); err != nil {
+		t.Fatal(err)
+	}
+	if kid.StatusName != "ok" {
+		t.Fatalf("共享子对象未翻译: %q", kid.StatusName)
+	}
+}
