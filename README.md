@@ -99,6 +99,26 @@ Generic entrypoints move the pointer/slice checks to compile time: `dict.Transla
 
 **Framework extras.** `NewFramework(cfg).Init()` preloads `cfg.Performance.PreloadDicts` through `DictTableLoader` (`fw.Preloaded(type, key)`), and `fw.GetMetrics()["translate"]` reports count / min / max / avg latency and error count for `fw.Translate`. `NewDictManager()` gives an isolated manager (own dictionaries, translators and config cache) for multi-tenant or test setups.
 
+## Performance
+
+Apple M-series, `go test -bench . -benchmem` (numbers move ±20% run to run):
+
+| Benchmark | v1.0.0 | v1.2.1 |
+| --- | --- | --- |
+| single struct, in-memory dict | 939 ns/op · 4 allocs | **175 ns/op · 1 alloc** |
+| 1000-element slice, sequential | 966 µs/op · 3000 allocs | **205 µs/op · 0 allocs** |
+| 1000-element slice, parallel | 291 µs/op | ~230 µs/op (parallel only pays for I/O-bound translators) |
+| nested struct | 1081 ns/op · 6 allocs | **324 ns/op · 0 allocs** |
+
+How it got there: per-type config cache with precomputed traversal steps (only nested or tagged fields are visited), pre-split tag names and target-field indexes, copy-on-write registries instead of RWMutex, lazy visited set for cycle safety, and a two-phase prefetch that replaces N database round-trips with one `IN` query per group. To profile yourself:
+
+```bash
+go test -run xxx -bench 'BenchmarkTranslateBatch$' -cpuprofile cpu.out -o dict.test ./
+go tool pprof -top -nodecount=20 dict.test cpu.out      # or: -http=:8080 for the flame graph
+```
+
+CI posts a `benchstat` comparison (base vs head) in every pull request's job summary; `go test -fuzz FuzzParseDBTag` fuzzes the tag parser.
+
 ## Concurrency and limits
 
 - `Translate` / `BatchTranslate` are safe for concurrent use. Registration (`RegisterDict`, `RegisterTranslator`, ...) is also safe to call concurrently with translation; the registry is copy-on-write, so register at startup — each call copies the small registry maps.
