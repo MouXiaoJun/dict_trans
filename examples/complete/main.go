@@ -3,11 +3,11 @@ package main
 import (
 	"fmt"
 
-	"github.com/mouxiaojun/dict-trans"
+	"github.com/MouXiaoJun/dict_trans"
 )
 
 func main() {
-	fmt.Println("=== dict-trans 完整示例 ===\n")
+	fmt.Printf("=== dict-trans 完整示例 ===\n\n")
 
 	// ========== 示例1: 字典翻译 ==========
 	fmt.Println("【示例1】字典翻译")

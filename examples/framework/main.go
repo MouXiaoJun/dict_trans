@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mouxiaojun/dict-trans"
+	"github.com/MouXiaoJun/dict_trans"
 )
 
 // 示例：高性能、高扩展性、高自定义的翻译框架使用
 
 func main() {
-	fmt.Println("=== 高性能翻译框架示例 ===\n")
+	fmt.Printf("=== 高性能翻译框架示例 ===\n\n")
 
 	// ========== 示例1: 基础配置 ==========
 	fmt.Println("【示例1】框架配置")

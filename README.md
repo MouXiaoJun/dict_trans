@@ -38,7 +38,7 @@ package main
 
 import (
     "fmt"
-    "github.com/mouxiaojun/dict-trans"
+    "github.com/MouXiaoJun/dict_trans"
 )
 
 type User struct {
@@ -139,7 +139,7 @@ type User struct {
 import (
     "database/sql"
     _ "github.com/go-sql-driver/mysql"
-    "github.com/mouxiaojun/dict-trans"
+    "github.com/MouXiaoJun/dict_trans"
 )
 
 // 连接数据库
@@ -181,7 +181,7 @@ CREATE TABLE sys_dict (
 import (
     "database/sql"
     _ "github.com/go-sql-driver/mysql"
-    "github.com/mouxiaojun/dict-trans"
+    "github.com/MouXiaoJun/dict_trans"
 )
 
 // 连接数据库
@@ -410,7 +410,7 @@ dict.BatchTranslate(&items, true)
 ## 安装
 
 ```bash
-go get github.com/mouxiaojun/dict-trans
+go get github.com/MouXiaoJun/dict_trans
 ```
 
 ## 文档

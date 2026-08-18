@@ -53,7 +53,7 @@ dict-trans 是一个**高效率、高扩展性、高自定义**的 Go 语言翻�
 ### 基础使用
 
 ```go
-import "github.com/mouxiaojun/dict-trans"
+import "github.com/MouXiaoJun/dict_trans"
 
 // 简单使用（向后兼容）
 dict.RegisterDict("sex", map[string]string{
@@ -73,7 +73,7 @@ dict.Translate(&user)
 ### 框架模式（推荐）
 
 ```go
-import "github.com/mouxiaojun/dict-trans"
+import "github.com/MouXiaoJun/dict_trans"
 
 // 创建自定义配置
 config := &dict.Config{
