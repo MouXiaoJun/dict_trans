@@ -1,14 +1,15 @@
 package dict
 
 import (
+	"context"
 	"fmt"
+	"time"
 )
 
 // Framework 翻译框架主入口
 type Framework struct {
 	config     *Config
 	manager    *DictManager
-	optimizer  *BatchQueryOptimizer
 	preloader  *PreloadManager
 	monitor    *PerformanceMonitor
 	Strategies *StrategyManager
@@ -23,7 +24,6 @@ func NewFramework(config *Config) *Framework {
 	return &Framework{
 		config:     config,
 		manager:    NewDictManager(),
-		optimizer:  NewBatchQueryOptimizer(),
 		preloader:  NewPreloadManager(),
 		monitor:    NewPerformanceMonitor(),
 		Strategies: NewStrategyManager(),
@@ -50,13 +50,24 @@ func (f *Framework) Init() error {
 		}
 	}
 
-	// 预加载字典
+	// 预加载字典：要求已注册的字典表翻译器实现 DictTableLoader（CreateDictTableTranslatorFromDB 的返回值已实现），
+	// 整表读入 preloader 并预热结果缓存
 	for _, dictType := range f.config.Performance.PreloadDicts {
-		// TODO: 实现预加载逻辑
-		_ = dictType
+		dt := dictType
+		err := f.preloader.Preload(dt, func() (map[string]string, error) {
+			return defaultDictTableManager.preload(context.Background(), dt)
+		})
+		if err != nil {
+			return fmt.Errorf("预加载字典 %s 失败: %w", dt, err)
+		}
 	}
 
 	return nil
+}
+
+// Preloaded 读取预加载的数据（Init 时按 Config.Performance.PreloadDicts 加载）
+func (f *Framework) Preloaded(dictType, key string) (string, bool) {
+	return f.preloader.Get(dictType, key)
 }
 
 // Translate 翻译（使用框架配置）
@@ -68,20 +79,26 @@ func (f *Framework) Translate(v any, options ...*TranslateOptions) error {
 		opts = &TranslateOptions{}
 	}
 
-	// 使用策略
-	if opts.Strategy != "" {
-		strategy := f.Strategies.GetStrategy(opts.Strategy)
-		if strategy != nil {
-			ctx := &TranslateContext{
-				SourceValue: v,
-				Metadata:    make(map[string]any),
-			}
-			return strategy.Translate(ctx)
-		}
+	// 使用策略，否则默认翻译；耗时与错误记入 PerformanceMonitor（GetMetrics()["translate"]）
+	start := time.Now()
+	var err error
+	if strategy := f.strategyFor(opts.Strategy); strategy != nil {
+		err = strategy.Translate(&TranslateContext{
+			SourceValue: v,
+			Metadata:    make(map[string]any),
+		})
+	} else {
+		err = f.manager.TranslateWithOptions(v, opts)
 	}
+	f.monitor.Record("translate", time.Since(start).Microseconds(), err)
+	return err
+}
 
-	// 使用默认翻译
-	return f.manager.TranslateWithOptions(v, opts)
+func (f *Framework) strategyFor(name string) TranslateStrategy {
+	if name == "" {
+		return nil
+	}
+	return f.Strategies.GetStrategy(name)
 }
 
 // RegisterDict 注册字典
