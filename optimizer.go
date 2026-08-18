@@ -304,16 +304,12 @@ func (dm *DictManager) TranslateBatch(items any, options *BatchOptions) error {
 		}
 	}
 
-	// 根据配置决定是否并行处理
-	if options.Parallel {
-		config := GetConfig()
-		length := rv.Len()
-		if length >= config.Performance.ParallelThreshold {
-			return dm.batchTranslateParallel(rv)
-		}
+	// BatchQuery=false 关闭 DB 预取；Parallel 且长度达到 ParallelThreshold 时并行
+	o := &translateOpts{noPrefetch: !options.BatchQuery}
+	if options.Parallel && rv.Len() >= GetConfig().Performance.ParallelThreshold {
+		o.parallel = true
 	}
-
-	return dm.translateSlice(rv)
+	return dm.translateSliceOpts(rv, o)
 }
 
 // TranslateWithOptions 使用选项翻译
