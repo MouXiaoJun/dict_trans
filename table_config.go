@@ -168,3 +168,48 @@ func (tc *TableConfig) BuildTypeCheckQuery(dictTypeCode string) (string, []any) 
 
 	return query, args
 }
+
+// BuildQueryAll 构建"取某类型全部 key/value"的查询：SELECT key, value FROM t WHERE type = ? [AND status = ?]
+func (tc *TableConfig) BuildQueryAll(dictType string) (string, []any) {
+	query := "SELECT " + tc.Fields.KeyField + ", " + tc.Fields.ValueField + " FROM " + tc.TableName + " WHERE "
+	args := []any{}
+	if tc.Fields.TypeField != "" {
+		query += tc.Fields.TypeField + " = ?"
+		args = append(args, dictType)
+	}
+	if tc.StatusField != nil {
+		if len(args) > 0 {
+			query += " AND "
+		}
+		query += tc.StatusField.FieldName + " = ?"
+		args = append(args, tc.StatusField.EnabledValue)
+	}
+	return query, args
+}
+
+// BuildQueryIn 构建批量查询：SELECT key, value FROM t WHERE type = ? AND key IN (?, ?, ...) [AND status = ?]
+func (tc *TableConfig) BuildQueryIn(dictType string, dictKeys []string) (string, []any) {
+	query := "SELECT " + tc.Fields.KeyField + ", " + tc.Fields.ValueField + " FROM " + tc.TableName + " WHERE "
+	args := make([]any, 0, len(dictKeys)+2)
+	if tc.Fields.TypeField != "" {
+		query += tc.Fields.TypeField + " = ?"
+		args = append(args, dictType)
+	}
+	if len(args) > 0 {
+		query += " AND "
+	}
+	query += tc.Fields.KeyField + " IN ("
+	for i, k := range dictKeys {
+		if i > 0 {
+			query += ", "
+		}
+		query += "?"
+		args = append(args, k)
+	}
+	query += ")"
+	if tc.StatusField != nil {
+		query += " AND " + tc.StatusField.FieldName + " = ?"
+		args = append(args, tc.StatusField.EnabledValue)
+	}
+	return query, args
+}
