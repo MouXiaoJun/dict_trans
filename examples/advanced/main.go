@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/mouxiaojun/dict-trans"
+	"github.com/MouXiaoJun/dict_trans"
 )
 
 func main() {

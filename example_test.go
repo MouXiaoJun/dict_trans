@@ -3,7 +3,7 @@ package dict_test
 import (
 	"fmt"
 
-	"github.com/mouxiaojun/dict-trans"
+	"github.com/MouXiaoJun/dict_trans"
 )
 
 // 示例：基本字典翻译
