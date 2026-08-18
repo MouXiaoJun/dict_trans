@@ -112,6 +112,4 @@ func (dm *DictManager) batchTranslateParallel(sliceValue reflect.Value) error {
 			return nil
 		}
 	}
-
-	return nil
 }
