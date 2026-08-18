@@ -52,7 +52,7 @@ func GetEnum(name string) map[string]string {
 }
 
 // Translate 实现 Translator 接口
-func (e *EnumTranslator) Translate(value interface{}, fieldName string, tagValue string) (string, error) {
+func (e *EnumTranslator) Translate(value any, fieldName string, tagValue string) (string, error) {
 	// tagValue 是枚举名称
 	enum := e.load()[tagValue]
 	if enum == nil {

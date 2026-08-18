@@ -16,7 +16,7 @@ type Config struct {
 	Extensions ExtensionsConfig
 
 	// 自定义配置
-	Custom map[string]interface{}
+	Custom map[string]any
 }
 
 // PerformanceConfig 性能配置
@@ -90,7 +90,7 @@ type Plugin interface {
 	Name() string
 
 	// Init 初始化插件
-	Init(config map[string]interface{}) error
+	Init(config map[string]any) error
 
 	// Execute 执行插件逻辑
 	Execute(ctx *TranslateContext) error
@@ -99,7 +99,7 @@ type Plugin interface {
 // TranslatorFactory 翻译器工厂接口
 type TranslatorFactory interface {
 	// Create 创建翻译器
-	Create(config map[string]interface{}) (Translator, error)
+	Create(config map[string]any) (Translator, error)
 
 	// Type 返回工厂类型
 	Type() string
@@ -108,7 +108,7 @@ type TranslatorFactory interface {
 // TranslateContext 翻译上下文
 type TranslateContext struct {
 	// 源值
-	SourceValue interface{}
+	SourceValue any
 
 	// 字段信息
 	FieldName string
@@ -121,7 +121,7 @@ type TranslateContext struct {
 	Result string
 
 	// 元数据
-	Metadata map[string]interface{}
+	Metadata map[string]any
 
 	// 是否跳过翻译
 	Skip bool
@@ -149,7 +149,7 @@ var (
 			Plugins:             make([]Plugin, 0),
 			TranslatorFactories: make(map[string]TranslatorFactory),
 		},
-		Custom: make(map[string]interface{}),
+		Custom: make(map[string]any),
 	}
 	configMutex sync.RWMutex
 )
@@ -190,7 +190,7 @@ func ResetConfig() {
 			Plugins:             make([]Plugin, 0),
 			TranslatorFactories: make(map[string]TranslatorFactory),
 		},
-		Custom: make(map[string]interface{}),
+		Custom: make(map[string]any),
 	}
 }
 

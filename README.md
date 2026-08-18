@@ -120,7 +120,7 @@ dict.Translate(&device)
 
 ```go
 // 注册自定义翻译器
-dict.RegisterTranslator("custom", dict.TranslatorFunc(func(value interface{}, fieldName string, tagValue string) (string, error) {
+dict.RegisterTranslator("custom", dict.TranslatorFunc(func(value any, fieldName string, tagValue string) (string, error) {
     // 自定义翻译逻辑，可以连接 Redis、数据库等
     return "翻译结果", nil
 }))
@@ -308,7 +308,7 @@ dict.RegisterDictTableTwoTranslator(translator)
 
 ```go
 // 注册数据库翻译器（实际项目中连接真实数据库）
-dict.RegisterDBTranslator(dict.DBTranslatorFunc(func(table, keyField, valueField string, key interface{}) (string, error) {
+dict.RegisterDBTranslator(dict.DBTranslatorFunc(func(table, keyField, valueField string, key any) (string, error) {
     // 这里实现数据库查询逻辑
     // 例如使用 GORM、database/sql 等
     return "查询结果", nil
@@ -349,7 +349,7 @@ type Item struct {
 }
 
 // 注册解包器
-dict.RegisterUnWrapper(dict.UnWrapperFunc(func(value interface{}) (interface{}, error) {
+dict.RegisterUnWrapper(dict.UnWrapperFunc(func(value any) (any, error) {
     if page, ok := value.(*Page); ok {
         return &page.Data, nil
     }

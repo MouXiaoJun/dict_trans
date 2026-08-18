@@ -56,7 +56,7 @@ func ClearDictTableTwoCache() {
 
 // createDictTableTwoTranslator 创建双表字典翻译器实例
 func createDictTableTwoTranslator(dictTypeCode string) Translator {
-	return TranslatorFunc(func(value interface{}, fieldName string, tagValue string) (string, error) {
+	return TranslatorFunc(func(value any, fieldName string, tagValue string) (string, error) {
 		manager := defaultDictTableTwoManager
 
 		// 将 value 转换为字符串

@@ -53,7 +53,7 @@ func example1_Config() {
 			TTL:        3600, // 1小时过期
 			MaxEntries: 50000,
 		},
-		Custom: map[string]interface{}{
+		Custom: map[string]any{
 			"custom_key": "custom_value",
 		},
 	}
@@ -145,7 +145,7 @@ func (p *CustomPlugin) Name() string {
 	return "custom_plugin"
 }
 
-func (p *CustomPlugin) Init(config map[string]interface{}) error {
+func (p *CustomPlugin) Init(config map[string]any) error {
 	fmt.Println("  [插件] 初始化自定义插件")
 	return nil
 }

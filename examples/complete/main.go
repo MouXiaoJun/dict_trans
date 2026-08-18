@@ -178,7 +178,7 @@ func example5_Wrapper() {
 	}
 
 	// 注册解包器
-	dict.RegisterUnWrapper(dict.UnWrapperFunc(func(value interface{}) (interface{}, error) {
+	dict.RegisterUnWrapper(dict.UnWrapperFunc(func(value any) (any, error) {
 		if page, ok := value.(*Page); ok {
 			return &page.Data, nil
 		}
@@ -201,7 +201,7 @@ func example5_Wrapper() {
 // 示例6: 自定义翻译器
 func example6_CustomTranslator() {
 	// 注册自定义翻译器（可以连接 Redis、外部 API 等）
-	dict.RegisterTranslator("redis", dict.TranslatorFunc(func(value interface{}, fieldName string, tagValue string) (string, error) {
+	dict.RegisterTranslator("redis", dict.TranslatorFunc(func(value any, fieldName string, tagValue string) (string, error) {
 		// 模拟从 Redis 获取数据
 		key := fmt.Sprintf("%v", value)
 		// 实际项目中: return redis.Get(key)
@@ -236,7 +236,7 @@ func example7_Database() {
 	}
 
 	// 注册数据库翻译器
-	dict.RegisterDBTranslator(dict.DBTranslatorFunc(func(table, keyField, valueField string, key interface{}) (string, error) {
+	dict.RegisterDBTranslator(dict.DBTranslatorFunc(func(table, keyField, valueField string, key any) (string, error) {
 		keyStr := fmt.Sprintf("%v", key)
 		if tableData, ok := mockDB[table]; ok {
 			if value, ok := tableData[keyStr]; ok {
@@ -379,7 +379,7 @@ func example10_Mixed() {
 			"2": "产品部",
 		},
 	}
-	dict.RegisterDBTranslator(dict.DBTranslatorFunc(func(table, keyField, valueField string, key interface{}) (string, error) {
+	dict.RegisterDBTranslator(dict.DBTranslatorFunc(func(table, keyField, valueField string, key any) (string, error) {
 		keyStr := fmt.Sprintf("%v", key)
 		if tableData, ok := mockDB[table]; ok {
 			if value, ok := tableData[keyStr]; ok {

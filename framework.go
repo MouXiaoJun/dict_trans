@@ -60,7 +60,7 @@ func (f *Framework) Init() error {
 }
 
 // Translate 翻译（使用框架配置）
-func (f *Framework) Translate(v interface{}, options ...*TranslateOptions) error {
+func (f *Framework) Translate(v any, options ...*TranslateOptions) error {
 	var opts *TranslateOptions
 	if len(options) > 0 {
 		opts = options[0]
@@ -74,7 +74,7 @@ func (f *Framework) Translate(v interface{}, options ...*TranslateOptions) error
 		if strategy != nil {
 			ctx := &TranslateContext{
 				SourceValue: v,
-				Metadata:    make(map[string]interface{}),
+				Metadata:    make(map[string]any),
 			}
 			return strategy.Translate(ctx)
 		}

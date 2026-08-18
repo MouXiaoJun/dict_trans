@@ -14,14 +14,14 @@ type DBTranslator interface {
 	// valueField: 值字段名（如 "name"）
 	// key: 要查询的键值
 	// 返回: 翻译后的值
-	Query(table, keyField, valueField string, key interface{}) (string, error)
+	Query(table, keyField, valueField string, key any) (string, error)
 }
 
 // DBTranslatorFunc 数据库翻译器函数类型
-type DBTranslatorFunc func(table, keyField, valueField string, key interface{}) (string, error)
+type DBTranslatorFunc func(table, keyField, valueField string, key any) (string, error)
 
 // Query 实现 DBTranslator 接口
-func (f DBTranslatorFunc) Query(table, keyField, valueField string, key interface{}) (string, error) {
+func (f DBTranslatorFunc) Query(table, keyField, valueField string, key any) (string, error) {
 	return f(table, keyField, valueField, key)
 }
 
@@ -57,7 +57,7 @@ func ClearDBCache() {
 
 // createDBTranslator 创建数据库翻译器实例
 func createDBTranslator(table, keyField, valueField string) Translator {
-	return TranslatorFunc(func(value interface{}, fieldName string, tagValue string) (string, error) {
+	return TranslatorFunc(func(value any, fieldName string, tagValue string) (string, error) {
 		manager := defaultDBTranslatorManager
 
 		// 构建缓存键

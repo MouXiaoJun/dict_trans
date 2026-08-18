@@ -132,7 +132,7 @@ func GetDict(name string) map[string]string {
 }
 
 // Translate 翻译结构体
-func Translate(v interface{}) error {
+func Translate(v any) error {
 	return defaultManager.Translate(v)
 }
 
@@ -162,7 +162,7 @@ func (dm *DictManager) RegisterTranslator(tagName string, translator Translator)
 }
 
 // Translate 翻译结构体（实例方法）
-func (dm *DictManager) Translate(v interface{}) error {
+func (dm *DictManager) Translate(v any) error {
 	// 尝试解包包装类型
 	if unwrapped, ok := dm.tryUnwrap(v); ok {
 		v = unwrapped
@@ -475,7 +475,7 @@ func (dm *DictManager) translateField(field reflect.Value, fieldType reflect.Str
 // translateFieldWithTranslator 使用翻译器翻译字段
 func (dm *DictManager) translateFieldWithTranslator(field reflect.Value, fieldType reflect.StructField, fieldCfg fieldConfig, structValue reflect.Value) error {
 	// 获取源字段值
-	var sourceValue interface{}
+	var sourceValue any
 	switch field.Kind() {
 	case reflect.String:
 		sourceValue = field.String()

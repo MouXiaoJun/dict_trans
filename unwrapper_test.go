@@ -22,7 +22,7 @@ func TestUnWrapper(t *testing.T) {
 	}
 
 	// 注册解包器
-	RegisterUnWrapper(UnWrapperFunc(func(value interface{}) (interface{}, error) {
+	RegisterUnWrapper(UnWrapperFunc(func(value any) (any, error) {
 		// 尝试解包 Page 类型
 		if page, ok := value.(*Page); ok {
 			return &page.Data, nil

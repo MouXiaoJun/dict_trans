@@ -265,7 +265,7 @@ type TranslateOptions struct {
 	Parallel bool
 
 	// 自定义上下文
-	Context map[string]interface{}
+	Context map[string]any
 }
 
 // BatchOptions 批量翻译选项
@@ -281,12 +281,12 @@ type BatchOptions struct {
 }
 
 // TranslateBatch 批量翻译（优化版）
-func TranslateBatch(items interface{}, options *BatchOptions) error {
+func TranslateBatch(items any, options *BatchOptions) error {
 	return defaultManager.TranslateBatch(items, options)
 }
 
 // TranslateBatch 批量翻译（实例方法）
-func (dm *DictManager) TranslateBatch(items interface{}, options *BatchOptions) error {
+func (dm *DictManager) TranslateBatch(items any, options *BatchOptions) error {
 	rv := reflect.ValueOf(items)
 	if rv.Kind() != reflect.Ptr {
 		return ErrNotPointer
@@ -317,16 +317,16 @@ func (dm *DictManager) TranslateBatch(items interface{}, options *BatchOptions) 
 }
 
 // TranslateWithOptions 使用选项翻译
-func TranslateWithOptions(v interface{}, options *TranslateOptions) error {
+func TranslateWithOptions(v any, options *TranslateOptions) error {
 	return defaultManager.TranslateWithOptions(v, options)
 }
 
 // TranslateWithOptions 使用选项翻译（实例方法）
-func (dm *DictManager) TranslateWithOptions(v interface{}, options *TranslateOptions) error {
+func (dm *DictManager) TranslateWithOptions(v any, options *TranslateOptions) error {
 	// ponytail: options 目前只由 Framework.Translate 用于策略分发，这里暂未消费；需要时再接
 	// 应用中间件
 	ctx := &TranslateContext{
-		Metadata: make(map[string]interface{}),
+		Metadata: make(map[string]any),
 	}
 
 	// BeforeTranslate 中间件
