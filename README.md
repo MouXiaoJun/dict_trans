@@ -54,8 +54,35 @@ func main() {
 | `dictTable:"type"` | single dictionary table (`sys_dict`) via `RegisterDictTableTranslator` | `Sex string \`dictTable:"sex" dictField:"SexName"\`` |
 | `dictTableTwo:"type"` | dictionary type table + data table via `RegisterDictTableTwoTranslator` | `Sex string \`dictTableTwo:"sex" dictField:"SexName"\`` |
 | `dictField:"Field"` | target field (string) that receives the translated text; required with every tag above | |
+| `mask:"format"` | mask a string field in place — `phone`/`idcard`/`bankcard`/`email`/`name`/`address`/`password`/`*`, or `"3,4"` to keep first 3 + last 4 runes | `Phone string \`mask:"phone"\`` |
 
 Priority when several tags are present on one field: `translate` > `db` > `dictTableTwo` > `dictTable` > `enum` > `dict`.
+
+## Data masking
+
+`dict.Mask(&user)` masks string fields in place; structs, struct pointers, struct slices and top-level slices are recursed automatically. It composes with translation — translate first, then mask:
+
+```go
+type User struct {
+	Name     string `mask:"name"`    // 张三 → 张*
+	Phone    string `mask:"phone"`   // 13800138000 → 138****8000
+	IDCard   string `mask:"idcard"`  // 110101199003071234 → 110101********1234
+	Email    string `mask:"email"`   // zhangsan@example.com → z*******@example.com
+	Password string `mask:"password"`
+}
+
+user := User{Name: "张三", Phone: "13800138000", Password: "secret"}
+dict.Translate(&user)
+dict.Mask(&user) // in place
+
+users := []User{{Name: "李四"}}
+dict.Mask(&users) // batch
+
+dict.MaskOf(&user)       // generic entry
+dict.RegisterMaskFormat("carplate", func(s string) string { /* custom */ })
+```
+
+Built-in formats: `phone` (3+4), `idcard` (6+4), `bankcard` (4+4), `email` (first char of local part), `name` (first char), `address` (first 6), `password` / `*` (all), and generic `"n,m"` keep form. All are rune-safe for Chinese text. `mask:"-"` skips a field; non-string fields are skipped.
 
 ## Database-backed dictionaries
 

@@ -35,11 +35,13 @@ import (
 
 // DictManager 字典管理器
 type DictManager struct {
-	reg         atomic.Pointer[registry]       // 字典 / 翻译器注册表（写时复制，读路径无锁）
-	regWrite    sync.Mutex                     // 串行化注册表写者
-	unwrappers  []UnWrapper                    // 包装类型解包器
-	configCache map[reflect.Type]*structConfig // 配置缓存
-	configMutex sync.RWMutex                   // 配置缓存互斥锁
+	reg             atomic.Pointer[registry]       // 字典 / 翻译器注册表（写时复制，读路径无锁）
+	regWrite        sync.Mutex                     // 串行化注册表写者
+	unwrappers      []UnWrapper                    // 包装类型解包器
+	configCache     map[reflect.Type]*structConfig // 配置缓存
+	configMutex     sync.RWMutex                   // 配置缓存互斥锁
+	maskConfigCache map[reflect.Type]*maskConfig   // 脱敏配置缓存（独立于翻译配置）
+	maskConfigMutex sync.RWMutex                   // 脱敏配置缓存互斥锁
 }
 
 // registry 字典与自定义翻译器注册表。读多写少（注册在启动期、翻译在热路径），
@@ -49,6 +51,7 @@ type DictManager struct {
 type registry struct {
 	dicts       map[string]map[string]string // dictName -> {key: value}
 	translators map[string]Translator        // tagName -> Translator
+	formats     map[string]MaskFormatter     // mask 格式名 -> 脱敏格式（自定义，按管理器隔离）
 }
 
 var emptyRegistry = &registry{}
@@ -69,12 +72,16 @@ func (dm *DictManager) updateReg(fn func(*registry)) {
 	next := &registry{
 		dicts:       make(map[string]map[string]string, len(old.dicts)+1),
 		translators: make(map[string]Translator, len(old.translators)+1),
+		formats:     make(map[string]MaskFormatter, len(old.formats)+1),
 	}
 	for k, v := range old.dicts {
 		next.dicts[k] = v
 	}
 	for k, v := range old.translators {
 		next.translators[k] = v
+	}
+	for k, v := range old.formats {
+		next.formats[k] = v
 	}
 	fn(next)
 	dm.reg.Store(next)
@@ -85,8 +92,9 @@ func (dm *DictManager) updateReg(fn func(*registry)) {
 // 注意：DB / 字典表翻译的结果缓存仍是进程级的（围绕用户注册的后端），不随管理器隔离。
 func NewDictManager() *DictManager {
 	return &DictManager{
-		unwrappers:  make([]UnWrapper, 0),
-		configCache: make(map[reflect.Type]*structConfig),
+		unwrappers:      make([]UnWrapper, 0),
+		configCache:     make(map[reflect.Type]*structConfig),
+		maskConfigCache: make(map[reflect.Type]*maskConfig),
 	}
 }
 

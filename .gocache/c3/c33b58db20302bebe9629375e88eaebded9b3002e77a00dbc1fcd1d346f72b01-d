@@ -1,0 +1,303 @@
+//line /Users/mouxiaojun/project/golang-dependencies/dict_trans/backend.go:1:1
+package dict
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
+)
+
+// ---------------------------------------------------------------------------
+// 可选接口（Go 惯用的"实现了就用"升级方式，不破坏已有接口）
+// ---------------------------------------------------------------------------
+
+// ContextTranslator 翻译器可选接口：需要超时 / 取消 / trace 时实现它，
+// TranslateWith(v, WithContext(ctx)) 会优先调用 TranslateContext。
+type ContextTranslator interface {
+	TranslateContext(ctx context.Context, value any, fieldName string, tagValue string) (string, error)
+}
+
+// DBContextTranslator DBTranslator 的 ctx 版可选接口
+type DBContextTranslator interface {
+	QueryContext(ctx context.Context, table, keyField, valueField string, key any) (string, error)
+}
+
+// DBBatchTranslator DBTranslator 的批量可选接口：一次查多个 key，返回 key -> value（缺失的 key 不出现在 map 里）
+type DBBatchTranslator interface {
+	QueryBatch(ctx context.Context, table, keyField, valueField string, keys []string) (map[string]string, error)
+}
+
+// DictTableContextTranslator DictTableTranslator / DictTableTwoTranslator 的 ctx 版可选接口
+type DictTableContextTranslator interface {
+	QueryDictContext(ctx context.Context, dictType, dictKey string) (string, error)
+}
+
+// DictTableBatchTranslator DictTableTranslator / DictTableTwoTranslator 的批量可选接口
+type DictTableBatchTranslator interface {
+	QueryDictBatch(ctx context.Context, dictType string, dictKeys []string) (map[string]string, error)
+}
+
+// DictTableLoader DictTableTranslator 的预加载可选接口：一次取出某个字典类型的全部 key -> value，
+// Framework.Init 按 Config.Performance.PreloadDicts 调用它预热缓存。
+type DictTableLoader interface {
+	LoadDict(ctx context.Context, dictType string) (map[string]string, error)
+}
+
+// ---------------------------------------------------------------------------
+// 结果缓存：Decorator——包在 DB 后端外面。默认进程内 map；Config.Cache.Enabled 且设置了 CustomCache（如 Redis）时走它，
+// TTL 取 Config.Cache.TTL。EnableXCache(false) 相当于摘掉这层装饰器。
+// ---------------------------------------------------------------------------
+
+type resultCache struct {
+	name    string // 前缀，三类缓存共用一个 CustomCache 时不撞 key
+	enabled atomic.Bool
+	mu      sync.RWMutex
+	m       map[string]string
+}
+
+func newResultCache(name string) *resultCache {goCover_3ffe0e214acd__0[0] = 1 ; goCover_3ffe0e214acd__0[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__0[2] = 0 ; goCover_3ffe0e214acd__0[3] = 1;
+	c := &resultCache{name: name, m: make(map[string]string)}
+	c.enabled.Store(true)
+	return c
+}
+
+func (c *resultCache) get(key string) (string, bool) {goCover_3ffe0e214acd__1[0] = 5 ; goCover_3ffe0e214acd__1[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__1[2] = 1 ; goCover_3ffe0e214acd__1[3] = 1;
+	if !c.enabled.Load() {goCover_3ffe0e214acd__1[6] = 1;
+		return "", false
+	}
+	goCover_3ffe0e214acd__1[4] = 1;if cfg := GetConfig(); cfg.Cache.Enabled && cfg.Cache.CustomCache != nil {goCover_3ffe0e214acd__1[7] = 1;
+		return cfg.Cache.CustomCache.Get(c.name + ":" + key)
+	}
+	goCover_3ffe0e214acd__1[5] = 1;c.mu.RLock()
+	v, ok := c.m[key]
+	c.mu.RUnlock()
+	return v, ok
+}
+
+func (c *resultCache) set(key, value string) {goCover_3ffe0e214acd__2[0] = 5 ; goCover_3ffe0e214acd__2[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__2[2] = 2 ; goCover_3ffe0e214acd__2[3] = 1;
+	if !c.enabled.Load() || value == "" {goCover_3ffe0e214acd__2[6] = 1;
+		return
+	}
+	goCover_3ffe0e214acd__2[4] = 1;if cfg := GetConfig(); cfg.Cache.Enabled && cfg.Cache.CustomCache != nil {goCover_3ffe0e214acd__2[7] = 1;
+		_ = cfg.Cache.CustomCache.Set(c.name+":"+key, value, cfg.Cache.TTL)
+		return
+	}
+	goCover_3ffe0e214acd__2[5] = 1;c.mu.Lock()
+	c.m[key] = value
+	c.mu.Unlock()
+}
+
+// clear 清空本地缓存；配置了 CustomCache 时调用它的 Clear（由实现决定范围）
+func (c *resultCache) clear() {goCover_3ffe0e214acd__3[0] = 3 ; goCover_3ffe0e214acd__3[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__3[2] = 3 ; goCover_3ffe0e214acd__3[3] = 1;
+	if cfg := GetConfig(); cfg.Cache.Enabled && cfg.Cache.CustomCache != nil {goCover_3ffe0e214acd__3[5] = 1;
+		_ = cfg.Cache.CustomCache.Clear()
+	}
+	goCover_3ffe0e214acd__3[4] = 1;c.mu.Lock()
+	c.m = make(map[string]string)
+	c.mu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
+// lookupManager：一类 DB 后端（db / dictTable / dictTableTwo）= 已注册后端 + 结果缓存
+// parts 是查找分组（dictTable：[dictType]；db：[table, keyField, valueField]），key 是字典键
+// ---------------------------------------------------------------------------
+
+type lookupManager struct {
+	name    string
+	backend atomic.Pointer[lookupBackend] // 用户注册的后端，写时整体替换
+	cache   *resultCache
+}
+
+// lookupBackend 把三类后端接口统一成 one / many / load 三个能力；many / load 为 nil 表示不支持
+type lookupBackend struct {
+	one  func(ctx context.Context, parts []string, key string) (string, error)
+	many func(ctx context.Context, parts []string, keys []string) (map[string]string, error)
+	load func(ctx context.Context, parts []string) (map[string]string, error)
+}
+
+// cacheGroup 分组的缓存键前缀；分隔符只影响缓存键，不再被反解析
+func cacheGroup(parts []string) string {goCover_3ffe0e214acd__4[0] = 1 ; goCover_3ffe0e214acd__4[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__4[2] = 4 ; goCover_3ffe0e214acd__4[3] = 1; return strings.Join(parts, "\x00") }
+
+func newLookupManager(name string) *lookupManager {goCover_3ffe0e214acd__5[0] = 1 ; goCover_3ffe0e214acd__5[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__5[2] = 5 ; goCover_3ffe0e214acd__5[3] = 1;
+	return &lookupManager{name: name, cache: newResultCache(name)}
+}
+
+func (m *lookupManager) lookup(ctx context.Context, group string, parts []string, key string) (string, error) {goCover_3ffe0e214acd__6[0] = 7 ; goCover_3ffe0e214acd__6[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__6[2] = 6 ; goCover_3ffe0e214acd__6[3] = 1;
+	cacheKey := group + ":" + key
+	if v, ok := m.cache.get(cacheKey); ok {goCover_3ffe0e214acd__6[7] = 1;
+		return v, nil
+	}
+	goCover_3ffe0e214acd__6[4] = 1;b := m.backend.Load()
+	if b == nil {goCover_3ffe0e214acd__6[8] = 1;
+		return "", fmt.Errorf("%s translator not registered", m.name)
+	}
+	goCover_3ffe0e214acd__6[5] = 1;v, err := b.one(ctx, parts, key)
+	if err != nil {goCover_3ffe0e214acd__6[9] = 1;
+		return "", err
+	}
+	goCover_3ffe0e214acd__6[6] = 1;m.cache.set(cacheKey, v)
+	return v, nil
+}
+
+// prefetch 批量预热：只查未命中缓存的 key；后端不支持批量则什么都不做（后续按单 key 走）
+func (m *lookupManager) prefetch(ctx context.Context, group string, parts []string, keys []string) error {goCover_3ffe0e214acd__7[0] = 13 ; goCover_3ffe0e214acd__7[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__7[2] = 7 ; goCover_3ffe0e214acd__7[3] = 1;
+	b := m.backend.Load()
+	if b == nil || b.many == nil || !m.cache.enabled.Load() {goCover_3ffe0e214acd__7[7] = 1;
+		return nil
+	}
+	goCover_3ffe0e214acd__7[4] = 1;opt := NewBatchQueryOptimizer()
+	seen := make(map[string]struct{}, len(keys))
+	for _, k := range keys {goCover_3ffe0e214acd__7[8] = 1;
+		if _, dup := seen[k]; dup {goCover_3ffe0e214acd__7[11] = 1;
+			continue
+		}
+		goCover_3ffe0e214acd__7[9] = 1;seen[k] = struct{}{}
+		if _, ok := m.cache.get(group + ":" + k); ok {goCover_3ffe0e214acd__7[12] = 1;
+			continue
+		}
+		goCover_3ffe0e214acd__7[10] = 1;k := k // go 1.21：循环变量仍是共享的
+		opt.AddQuery(group, k, func(v string, err error) {goCover_3ffe0e214acd__7[13] = 1;
+			if err == nil {goCover_3ffe0e214acd__7[14] = 1;
+				m.cache.set(group+":"+k, v)
+			}
+		})
+	}
+	goCover_3ffe0e214acd__7[5] = 1;var batchErr error
+	opt.ExecuteBatch(group, func(ks []string) (map[string]string, error) {goCover_3ffe0e214acd__7[15] = 1;
+		res, err := b.many(ctx, parts, ks)
+		batchErr = err
+		return res, err
+	})
+	goCover_3ffe0e214acd__7[6] = 1;return batchErr
+}
+
+// preload 预加载整个分组
+func (m *lookupManager) preload(ctx context.Context, parts []string) (map[string]string, error) {goCover_3ffe0e214acd__8[0] = 7 ; goCover_3ffe0e214acd__8[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__8[2] = 8 ; goCover_3ffe0e214acd__8[3] = 1;
+	b := m.backend.Load()
+	if b == nil || b.load == nil {goCover_3ffe0e214acd__8[7] = 1;
+		return nil, fmt.Errorf("%s translator does not support preload (implement DictTableLoader)", m.name)
+	}
+	goCover_3ffe0e214acd__8[4] = 1;group := cacheGroup(parts)
+	data, err := b.load(ctx, parts)
+	if err != nil {goCover_3ffe0e214acd__8[8] = 1;
+		return nil, err
+	}
+	goCover_3ffe0e214acd__8[5] = 1;for k, v := range data {goCover_3ffe0e214acd__8[9] = 1;
+		m.cache.set(group+":"+k, v)
+	}
+	goCover_3ffe0e214acd__8[6] = 1;return data, nil
+}
+
+// ---------------------------------------------------------------------------
+// lookupTranslator：挂在字段上的翻译器（一个 struct tag 对应一个），实现 Translator + ContextTranslator
+// ---------------------------------------------------------------------------
+
+type lookupTranslator struct {
+	mgr   *lookupManager
+	parts []string // dictTable：[dictType]；db：[table, keyField, valueField]
+	group string   // cacheGroup(parts)，预先算好
+}
+
+func newLookupTranslator(mgr *lookupManager, parts ...string) *lookupTranslator {goCover_3ffe0e214acd__9[0] = 1 ; goCover_3ffe0e214acd__9[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__9[2] = 9 ; goCover_3ffe0e214acd__9[3] = 1;
+	return &lookupTranslator{mgr: mgr, parts: parts, group: cacheGroup(parts)}
+}
+
+func (t *lookupTranslator) Translate(value any, fieldName string, tagValue string) (string, error) {goCover_3ffe0e214acd__10[0] = 1 ; goCover_3ffe0e214acd__10[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__10[2] = 10 ; goCover_3ffe0e214acd__10[3] = 1;
+	return t.TranslateContext(context.Background(), value, fieldName, tagValue)
+}
+
+func (t *lookupTranslator) TranslateContext(ctx context.Context, value any, _ string, _ string) (string, error) {goCover_3ffe0e214acd__11[0] = 1 ; goCover_3ffe0e214acd__11[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__11[2] = 11 ; goCover_3ffe0e214acd__11[3] = 1;
+	return t.mgr.lookup(ctx, t.group, t.parts, fmt.Sprintf("%v", value))
+}
+
+// ---------------------------------------------------------------------------
+// 三个包级管理器 + 对应的注册 / 开关 / 清空函数
+// ---------------------------------------------------------------------------
+
+var (
+	defaultDBTranslatorManager = newLookupManager("db")
+	defaultDictTableManager    = newLookupManager("dictTable")
+	defaultDictTableTwoManager = newLookupManager("dictTableTwo")
+)
+
+// RegisterDBTranslator 注册数据库翻译器（可选实现 DBContextTranslator / DBBatchTranslator）
+func RegisterDBTranslator(translator DBTranslator) {goCover_3ffe0e214acd__12[0] = 8 ; goCover_3ffe0e214acd__12[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__12[2] = 12 ; goCover_3ffe0e214acd__12[3] = 1;
+	b := &lookupBackend{
+		one: func(ctx context.Context, p []string, key string) (string, error) {goCover_3ffe0e214acd__12[6] = 1;
+			if ct, ok := translator.(DBContextTranslator); ok {goCover_3ffe0e214acd__12[8] = 1;
+				return ct.QueryContext(ctx, p[0], p[1], p[2], key)
+			}
+			goCover_3ffe0e214acd__12[7] = 1;return translator.Query(p[0], p[1], p[2], key)
+		},
+	}
+	goCover_3ffe0e214acd__12[4] = 1;if bt, ok := translator.(DBBatchTranslator); ok {goCover_3ffe0e214acd__12[9] = 1;
+		b.many = func(ctx context.Context, p []string, keys []string) (map[string]string, error) {goCover_3ffe0e214acd__12[10] = 1;
+			return bt.QueryBatch(ctx, p[0], p[1], p[2], keys)
+		}
+	}
+	goCover_3ffe0e214acd__12[5] = 1;defaultDBTranslatorManager.backend.Store(b)
+}
+
+// EnableDBCache 启用 / 禁用数据库翻译结果缓存
+func EnableDBCache(enabled bool) {goCover_3ffe0e214acd__13[0] = 1 ; goCover_3ffe0e214acd__13[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__13[2] = 13 ; goCover_3ffe0e214acd__13[3] = 1; defaultDBTranslatorManager.cache.enabled.Store(enabled) }
+
+// ClearDBCache 清空数据库翻译结果缓存。若配置了 Config.Cache.CustomCache，会调用它的 Clear（Cache 接口无按前缀清理，三类共用时会一起清空）
+func ClearDBCache() {goCover_3ffe0e214acd__14[0] = 1 ; goCover_3ffe0e214acd__14[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__14[2] = 14 ; goCover_3ffe0e214acd__14[3] = 1; defaultDBTranslatorManager.cache.clear() }
+
+func createDBTranslator(table, keyField, valueField string) Translator {goCover_3ffe0e214acd__15[0] = 1 ; goCover_3ffe0e214acd__15[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__15[2] = 15 ; goCover_3ffe0e214acd__15[3] = 1;
+	return newLookupTranslator(defaultDBTranslatorManager, table, keyField, valueField)
+}
+
+func dictTableBackend(translator interface {
+	QueryDict(dictType, dictKey string) (string, error)
+}) *lookupBackend {goCover_3ffe0e214acd__16[0] = 11 ; goCover_3ffe0e214acd__16[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__16[2] = 16 ; goCover_3ffe0e214acd__16[3] = 1;
+	b := &lookupBackend{
+		one: func(ctx context.Context, p []string, key string) (string, error) {goCover_3ffe0e214acd__16[7] = 1;
+			if ct, ok := translator.(DictTableContextTranslator); ok {goCover_3ffe0e214acd__16[9] = 1;
+				return ct.QueryDictContext(ctx, p[0], key)
+			}
+			goCover_3ffe0e214acd__16[8] = 1;return translator.QueryDict(p[0], key)
+		},
+	}
+	goCover_3ffe0e214acd__16[4] = 1;if bt, ok := translator.(DictTableBatchTranslator); ok {goCover_3ffe0e214acd__16[10] = 1;
+		b.many = func(ctx context.Context, p []string, keys []string) (map[string]string, error) {goCover_3ffe0e214acd__16[11] = 1;
+			return bt.QueryDictBatch(ctx, p[0], keys)
+		}
+	}
+	goCover_3ffe0e214acd__16[5] = 1;if ld, ok := translator.(DictTableLoader); ok {goCover_3ffe0e214acd__16[12] = 1;
+		b.load = func(ctx context.Context, p []string) (map[string]string, error) {goCover_3ffe0e214acd__16[13] = 1; return ld.LoadDict(ctx, p[0]) }
+	}
+	goCover_3ffe0e214acd__16[6] = 1;return b
+}
+
+// RegisterDictTableTranslator 注册字典表翻译器（可选实现 DictTableContextTranslator / DictTableBatchTranslator / DictTableLoader）
+func RegisterDictTableTranslator(translator DictTableTranslator) {goCover_3ffe0e214acd__17[0] = 1 ; goCover_3ffe0e214acd__17[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__17[2] = 17 ; goCover_3ffe0e214acd__17[3] = 1;
+	defaultDictTableManager.backend.Store(dictTableBackend(translator))
+}
+
+// EnableDictTableCache 启用 / 禁用字典表翻译结果缓存
+func EnableDictTableCache(enabled bool) {goCover_3ffe0e214acd__18[0] = 1 ; goCover_3ffe0e214acd__18[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__18[2] = 18 ; goCover_3ffe0e214acd__18[3] = 1; defaultDictTableManager.cache.enabled.Store(enabled) }
+
+// ClearDictTableCache 清空字典表翻译结果缓存。若配置了 Config.Cache.CustomCache，会调用它的 Clear（Cache 接口无按前缀清理，三类共用时会一起清空）
+func ClearDictTableCache() {goCover_3ffe0e214acd__19[0] = 1 ; goCover_3ffe0e214acd__19[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__19[2] = 19 ; goCover_3ffe0e214acd__19[3] = 1; defaultDictTableManager.cache.clear() }
+
+func createDictTableTranslator(dictType string) Translator {goCover_3ffe0e214acd__20[0] = 1 ; goCover_3ffe0e214acd__20[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__20[2] = 20 ; goCover_3ffe0e214acd__20[3] = 1;
+	return newLookupTranslator(defaultDictTableManager, dictType)
+}
+
+// RegisterDictTableTwoTranslator 注册双表字典翻译器（可选实现 DictTableContextTranslator / DictTableBatchTranslator / DictTableLoader）
+func RegisterDictTableTwoTranslator(translator DictTableTwoTranslator) {goCover_3ffe0e214acd__21[0] = 1 ; goCover_3ffe0e214acd__21[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__21[2] = 21 ; goCover_3ffe0e214acd__21[3] = 1;
+	defaultDictTableTwoManager.backend.Store(dictTableBackend(translator))
+}
+
+// EnableDictTableTwoCache 启用 / 禁用双表字典翻译结果缓存
+func EnableDictTableTwoCache(enabled bool) {goCover_3ffe0e214acd__22[0] = 1 ; goCover_3ffe0e214acd__22[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__22[2] = 22 ; goCover_3ffe0e214acd__22[3] = 1; defaultDictTableTwoManager.cache.enabled.Store(enabled) }
+
+// ClearDictTableTwoCache 清空双表字典翻译结果缓存。若配置了 Config.Cache.CustomCache，会调用它的 Clear（Cache 接口无按前缀清理，三类共用时会一起清空）
+func ClearDictTableTwoCache() {goCover_3ffe0e214acd__23[0] = 1 ; goCover_3ffe0e214acd__23[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__23[2] = 23 ; goCover_3ffe0e214acd__23[3] = 1; defaultDictTableTwoManager.cache.clear() }
+
+func createDictTableTwoTranslator(dictTypeCode string) Translator {goCover_3ffe0e214acd__24[0] = 1 ; goCover_3ffe0e214acd__24[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__24[2] = 24 ; goCover_3ffe0e214acd__24[3] = 1;
+	return newLookupTranslator(defaultDictTableTwoManager, dictTypeCode)
+}

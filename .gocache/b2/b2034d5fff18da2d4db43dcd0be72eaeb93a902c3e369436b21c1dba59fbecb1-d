@@ -1,0 +1,354 @@
+//line /Users/mouxiaojun/project/golang-dependencies/dict_trans/optimizer.go:1:1
+package dict
+
+import (
+	"reflect"
+	"sync"
+)
+
+// BatchQueryOptimizer 批量查询优化器
+// 用于优化数据库查询，将多个查询合并为批量查询
+type BatchQueryOptimizer struct {
+	pendingQueries map[string][]pendingQuery
+	mutex          sync.Mutex
+}
+
+type pendingQuery struct {
+	key      string
+	callback func(string, error)
+}
+
+// NewBatchQueryOptimizer 创建批量查询优化器
+func NewBatchQueryOptimizer() *BatchQueryOptimizer {goCover_3ffe0e214acd__119[0] = 1 ; goCover_3ffe0e214acd__119[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__119[2] = 119 ; goCover_3ffe0e214acd__119[3] = 1;
+	return &BatchQueryOptimizer{
+		pendingQueries: make(map[string][]pendingQuery),
+	}
+}
+
+// AddQuery 添加查询请求
+func (o *BatchQueryOptimizer) AddQuery(queryKey string, key string, callback func(string, error)) {goCover_3ffe0e214acd__120[0] = 4 ; goCover_3ffe0e214acd__120[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__120[2] = 120 ; goCover_3ffe0e214acd__120[3] = 1;
+	o.mutex.Lock()
+	defer o.mutex.Unlock()
+
+	goCover_3ffe0e214acd__120[4] = 1;if o.pendingQueries[queryKey] == nil {goCover_3ffe0e214acd__120[6] = 1;
+		o.pendingQueries[queryKey] = make([]pendingQuery, 0)
+	}
+
+	goCover_3ffe0e214acd__120[5] = 1;o.pendingQueries[queryKey] = append(o.pendingQueries[queryKey], pendingQuery{
+		key:      key,
+		callback: callback,
+	})
+}
+
+// ExecuteBatch 执行批量查询
+func (o *BatchQueryOptimizer) ExecuteBatch(queryKey string, batchQuery func([]string) (map[string]string, error)) {goCover_3ffe0e214acd__121[0] = 13 ; goCover_3ffe0e214acd__121[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__121[2] = 121 ; goCover_3ffe0e214acd__121[3] = 1;
+	o.mutex.Lock()
+	queries := o.pendingQueries[queryKey]
+	delete(o.pendingQueries, queryKey)
+	o.mutex.Unlock()
+
+	goCover_3ffe0e214acd__121[4] = 1;if len(queries) == 0 {goCover_3ffe0e214acd__121[8] = 1;
+		return
+	}
+
+	// 收集所有键
+	goCover_3ffe0e214acd__121[5] = 1;keys := make([]string, len(queries))
+	for i, q := range queries {goCover_3ffe0e214acd__121[9] = 1;
+		keys[i] = q.key
+	}
+
+	// 执行批量查询
+	goCover_3ffe0e214acd__121[6] = 1;results, err := batchQuery(keys)
+	if err != nil {goCover_3ffe0e214acd__121[10] = 1;
+		// 所有查询都返回错误
+		for _, q := range queries {goCover_3ffe0e214acd__121[12] = 1;
+			q.callback("", err)
+		}
+		goCover_3ffe0e214acd__121[11] = 1;return
+	}
+
+	// 分发结果
+	goCover_3ffe0e214acd__121[7] = 1;for _, q := range queries {goCover_3ffe0e214acd__121[13] = 1;
+		if value, ok := results[q.key]; ok {goCover_3ffe0e214acd__121[14] = 1;
+			q.callback(value, nil)
+		} else{ goCover_3ffe0e214acd__121[15] = 1;{
+			q.callback("", nil)
+		}}
+	}
+}
+
+// PreloadManager 预加载管理器
+type PreloadManager struct {
+	preloaded map[string]map[string]string
+	mutex     sync.RWMutex
+}
+
+// NewPreloadManager 创建预加载管理器
+func NewPreloadManager() *PreloadManager {goCover_3ffe0e214acd__122[0] = 1 ; goCover_3ffe0e214acd__122[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__122[2] = 122 ; goCover_3ffe0e214acd__122[3] = 1;
+	return &PreloadManager{
+		preloaded: make(map[string]map[string]string),
+	}
+}
+
+// Preload 预加载字典
+func (p *PreloadManager) Preload(dictType string, loader func() (map[string]string, error)) error {goCover_3ffe0e214acd__123[0] = 4 ; goCover_3ffe0e214acd__123[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__123[2] = 123 ; goCover_3ffe0e214acd__123[3] = 1;
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	goCover_3ffe0e214acd__123[4] = 1;data, err := loader()
+	if err != nil {goCover_3ffe0e214acd__123[6] = 1;
+		return err
+	}
+
+	goCover_3ffe0e214acd__123[5] = 1;p.preloaded[dictType] = data
+	return nil
+}
+
+// Get 获取预加载的数据
+func (p *PreloadManager) Get(dictType, key string) (string, bool) {goCover_3ffe0e214acd__124[0] = 5 ; goCover_3ffe0e214acd__124[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__124[2] = 124 ; goCover_3ffe0e214acd__124[3] = 1;
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+
+	goCover_3ffe0e214acd__124[4] = 1;if dict, ok := p.preloaded[dictType]; ok {goCover_3ffe0e214acd__124[6] = 1;
+		if value, ok := dict[key]; ok {goCover_3ffe0e214acd__124[7] = 1;
+			return value, true
+		}
+	}
+	goCover_3ffe0e214acd__124[5] = 1;return "", false
+}
+
+// Clear 清空预加载数据
+func (p *PreloadManager) Clear() {goCover_3ffe0e214acd__125[0] = 1 ; goCover_3ffe0e214acd__125[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__125[2] = 125 ; goCover_3ffe0e214acd__125[3] = 1;
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	p.preloaded = make(map[string]map[string]string)
+}
+
+// TranslateStrategy 翻译策略接口
+type TranslateStrategy interface {
+	// Translate 执行翻译
+	Translate(ctx *TranslateContext) error
+
+	// Name 策略名称
+	Name() string
+}
+
+// StrategyManager 策略管理器
+type StrategyManager struct {
+	strategies      map[string]TranslateStrategy
+	defaultStrategy TranslateStrategy
+}
+
+// NewStrategyManager 创建策略管理器
+func NewStrategyManager() *StrategyManager {goCover_3ffe0e214acd__126[0] = 1 ; goCover_3ffe0e214acd__126[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__126[2] = 126 ; goCover_3ffe0e214acd__126[3] = 1;
+	return &StrategyManager{
+		strategies: make(map[string]TranslateStrategy),
+	}
+}
+
+// RegisterStrategy 注册策略
+func (s *StrategyManager) RegisterStrategy(strategy TranslateStrategy) {goCover_3ffe0e214acd__127[0] = 1 ; goCover_3ffe0e214acd__127[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__127[2] = 127 ; goCover_3ffe0e214acd__127[3] = 1;
+	s.strategies[strategy.Name()] = strategy
+}
+
+// SetDefaultStrategy 设置默认策略
+func (s *StrategyManager) SetDefaultStrategy(strategy TranslateStrategy) {goCover_3ffe0e214acd__128[0] = 1 ; goCover_3ffe0e214acd__128[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__128[2] = 128 ; goCover_3ffe0e214acd__128[3] = 1;
+	s.defaultStrategy = strategy
+}
+
+// GetStrategy 获取策略
+func (s *StrategyManager) GetStrategy(name string) TranslateStrategy {goCover_3ffe0e214acd__129[0] = 3 ; goCover_3ffe0e214acd__129[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__129[2] = 129 ; goCover_3ffe0e214acd__129[3] = 1;
+	if strategy, ok := s.strategies[name]; ok {goCover_3ffe0e214acd__129[5] = 1;
+		return strategy
+	}
+	goCover_3ffe0e214acd__129[4] = 1;return s.defaultStrategy
+}
+
+// DefaultTranslateStrategy 默认翻译策略
+type DefaultTranslateStrategy struct{}
+
+func (s *DefaultTranslateStrategy) Name() string {goCover_3ffe0e214acd__130[0] = 1 ; goCover_3ffe0e214acd__130[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__130[2] = 130 ; goCover_3ffe0e214acd__130[3] = 1;
+	return "default"
+}
+
+func (s *DefaultTranslateStrategy) Translate(ctx *TranslateContext) error {goCover_3ffe0e214acd__131[0] = 1 ; goCover_3ffe0e214acd__131[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__131[2] = 131 ; goCover_3ffe0e214acd__131[3] = 1;
+	// 默认策略：使用现有的翻译逻辑
+	// 这里可以调用现有的翻译器
+	return nil
+}
+
+// PerformanceMonitor 性能监控器
+type PerformanceMonitor struct {
+	metrics map[string]*Metric
+	mutex   sync.RWMutex
+}
+
+type Metric struct {
+	Count      int64
+	TotalTime  int64 // 微秒
+	MinTime    int64
+	MaxTime    int64
+	ErrorCount int64
+}
+
+// NewPerformanceMonitor 创建性能监控器
+func NewPerformanceMonitor() *PerformanceMonitor {goCover_3ffe0e214acd__132[0] = 1 ; goCover_3ffe0e214acd__132[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__132[2] = 132 ; goCover_3ffe0e214acd__132[3] = 1;
+	return &PerformanceMonitor{
+		metrics: make(map[string]*Metric),
+	}
+}
+
+// Record 记录性能指标
+func (m *PerformanceMonitor) Record(operation string, duration int64, err error) {goCover_3ffe0e214acd__133[0] = 10 ; goCover_3ffe0e214acd__133[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__133[2] = 133 ; goCover_3ffe0e214acd__133[3] = 1;
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	goCover_3ffe0e214acd__133[4] = 1;metric, ok := m.metrics[operation]
+	if !ok {goCover_3ffe0e214acd__133[8] = 1;
+		metric = &Metric{
+			MinTime: duration,
+			MaxTime: duration,
+		}
+		goCover_3ffe0e214acd__133[9] = 1;m.metrics[operation] = metric
+	}
+
+	goCover_3ffe0e214acd__133[5] = 1;metric.Count++
+	metric.TotalTime += duration
+	if duration < metric.MinTime {goCover_3ffe0e214acd__133[10] = 1;
+		metric.MinTime = duration
+	}
+	goCover_3ffe0e214acd__133[6] = 1;if duration > metric.MaxTime {goCover_3ffe0e214acd__133[11] = 1;
+		metric.MaxTime = duration
+	}
+	goCover_3ffe0e214acd__133[7] = 1;if err != nil {goCover_3ffe0e214acd__133[12] = 1;
+		metric.ErrorCount++
+	}
+}
+
+// GetMetrics 获取性能指标
+func (m *PerformanceMonitor) GetMetrics() map[string]*Metric {goCover_3ffe0e214acd__134[0] = 4 ; goCover_3ffe0e214acd__134[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__134[2] = 134 ; goCover_3ffe0e214acd__134[3] = 1;
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+
+	goCover_3ffe0e214acd__134[4] = 1;result := make(map[string]*Metric)
+	for k, v := range m.metrics {goCover_3ffe0e214acd__134[6] = 1;
+		result[k] = &Metric{
+			Count:      v.Count,
+			TotalTime:  v.TotalTime,
+			MinTime:    v.MinTime,
+			MaxTime:    v.MaxTime,
+			ErrorCount: v.ErrorCount,
+		}
+	}
+	goCover_3ffe0e214acd__134[5] = 1;return result
+}
+
+// GetAverageTime 获取平均时间（微秒）
+func (m *Metric) GetAverageTime() int64 {goCover_3ffe0e214acd__135[0] = 3 ; goCover_3ffe0e214acd__135[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__135[2] = 135 ; goCover_3ffe0e214acd__135[3] = 1;
+	if m.Count == 0 {goCover_3ffe0e214acd__135[5] = 1;
+		return 0
+	}
+	goCover_3ffe0e214acd__135[4] = 1;return m.TotalTime / m.Count
+}
+
+// TranslateOptions 翻译选项
+type TranslateOptions struct {
+	// 使用策略
+	Strategy string
+
+	// 跳过缓存
+	SkipCache bool
+
+	// 批量模式
+	BatchMode bool
+
+	// 并行处理
+	Parallel bool
+
+	// 自定义上下文
+	Context map[string]any
+}
+
+// BatchOptions 批量翻译选项
+type BatchOptions struct {
+	// 并行处理
+	Parallel bool
+
+	// 批量查询优化
+	BatchQuery bool
+
+	// 并发数
+	Concurrency int
+}
+
+// TranslateBatch 批量翻译（优化版）
+func TranslateBatch(items any, options *BatchOptions) error {goCover_3ffe0e214acd__136[0] = 1 ; goCover_3ffe0e214acd__136[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__136[2] = 136 ; goCover_3ffe0e214acd__136[3] = 1;
+	return defaultManager.TranslateBatch(items, options)
+}
+
+// TranslateBatch 批量翻译（实例方法）
+func (dm *DictManager) TranslateBatch(items any, options *BatchOptions) error {goCover_3ffe0e214acd__137[0] = 9 ; goCover_3ffe0e214acd__137[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__137[2] = 137 ; goCover_3ffe0e214acd__137[3] = 1;
+	rv := reflect.ValueOf(items)
+	if rv.Kind() != reflect.Ptr {goCover_3ffe0e214acd__137[8] = 1;
+		return ErrNotPointer
+	}
+
+	goCover_3ffe0e214acd__137[4] = 1;rv = rv.Elem()
+	if rv.Kind() != reflect.Slice {goCover_3ffe0e214acd__137[9] = 1;
+		return ErrNotSlice
+	}
+
+	goCover_3ffe0e214acd__137[5] = 1;if options == nil {goCover_3ffe0e214acd__137[10] = 1;
+		options = &BatchOptions{
+			Parallel:   true,
+			BatchQuery: true,
+		}
+	}
+
+	// BatchQuery=false 关闭 DB 预取；Parallel 且长度达到 ParallelThreshold 时并行
+	goCover_3ffe0e214acd__137[6] = 1;o := &translateOpts{noPrefetch: !options.BatchQuery}
+	if options.Parallel && rv.Len() >= GetConfig().Performance.ParallelThreshold {goCover_3ffe0e214acd__137[11] = 1;
+		o.parallel = true
+	}
+	goCover_3ffe0e214acd__137[7] = 1;return dm.translateSliceOpts(rv, o)
+}
+
+// TranslateWithOptions 使用选项翻译
+func TranslateWithOptions(v any, options *TranslateOptions) error {goCover_3ffe0e214acd__138[0] = 1 ; goCover_3ffe0e214acd__138[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__138[2] = 138 ; goCover_3ffe0e214acd__138[3] = 1;
+	return defaultManager.TranslateWithOptions(v, options)
+}
+
+// TranslateWithOptions 使用选项翻译（实例方法）
+func (dm *DictManager) TranslateWithOptions(v any, options *TranslateOptions) error {goCover_3ffe0e214acd__139[0] = 12 ; goCover_3ffe0e214acd__139[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__139[2] = 139 ; goCover_3ffe0e214acd__139[3] = 1;
+	// ponytail: options 目前只由 Framework.Translate 用于策略分发，这里暂未消费；需要时再接
+	// 应用中间件
+	ctx := &TranslateContext{
+		Metadata: make(map[string]any),
+	}
+
+	// BeforeTranslate 中间件
+	goCover_3ffe0e214acd__139[4] = 1;config := GetConfig()
+	for _, middleware := range config.Extensions.Middlewares {goCover_3ffe0e214acd__139[8] = 1;
+		if err := middleware.BeforeTranslate(ctx); err != nil {goCover_3ffe0e214acd__139[10] = 1;
+			return err
+		}
+		goCover_3ffe0e214acd__139[9] = 1;if ctx.Skip {goCover_3ffe0e214acd__139[11] = 1;
+			return nil
+		}
+	}
+
+	// 执行翻译
+	goCover_3ffe0e214acd__139[5] = 1;err := dm.Translate(v)
+	if err != nil {goCover_3ffe0e214acd__139[12] = 1;
+		ctx.Error = err
+	}
+
+	// AfterTranslate 中间件
+	goCover_3ffe0e214acd__139[6] = 1;for _, middleware := range config.Extensions.Middlewares {goCover_3ffe0e214acd__139[13] = 1;
+		if err := middleware.AfterTranslate(ctx); err != nil {goCover_3ffe0e214acd__139[14] = 1;
+			return err
+		}
+	}
+
+	goCover_3ffe0e214acd__139[7] = 1;return err
+}

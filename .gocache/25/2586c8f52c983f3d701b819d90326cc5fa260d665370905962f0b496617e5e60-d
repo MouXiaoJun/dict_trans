@@ -1,0 +1,102 @@
+//line /Users/mouxiaojun/project/golang-dependencies/dict_trans/dict_table_two.go:1:1
+package dict
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+)
+
+// DictTableTwoTranslator 双表字典翻译器接口（字典类型表 + 字典数据表）。
+// 可选实现 DictTableContextTranslator（ctx）、DictTableBatchTranslator（批量）、DictTableLoader（预加载）。
+type DictTableTwoTranslator interface {
+	// QueryDict 查询字典数据
+	// dictTypeCode: 字典类型编码, dictKey: 字典键
+	QueryDict(dictTypeCode, dictKey string) (string, error)
+}
+
+// DictTableTwoTranslatorFunc 双表字典翻译器函数类型
+type DictTableTwoTranslatorFunc func(dictTypeCode, dictKey string) (string, error)
+
+// QueryDict 实现 DictTableTwoTranslator 接口
+func (f DictTableTwoTranslatorFunc) QueryDict(dictTypeCode, dictKey string) (string, error) {goCover_3ffe0e214acd__76[0] = 1 ; goCover_3ffe0e214acd__76[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__76[2] = 76 ; goCover_3ffe0e214acd__76[3] = 1;
+	return f(dictTypeCode, dictKey)
+}
+
+// CreateDictTableTwoTranslatorFromDB 从数据库创建双表字典翻译器（默认表结构）
+func CreateDictTableTwoTranslatorFromDB(db *sql.DB, dictTypeTable, dictDataTable string) DictTableTwoTranslator {goCover_3ffe0e214acd__77[0] = 1 ; goCover_3ffe0e214acd__77[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__77[2] = 77 ; goCover_3ffe0e214acd__77[3] = 1;
+	return CreateDictTableTwoTranslatorFromDBWithConfig(
+		db,
+		DefaultDictTypeTableConfig(dictTypeTable),
+		DefaultDictDataTableConfig(dictDataTable),
+	)
+}
+
+// CreateDictTableTwoTranslatorFromDBWithConfig 从数据库创建双表字典翻译器（自定义表结构）。
+// 返回值同时实现 DictTableContextTranslator / DictTableBatchTranslator / DictTableLoader。
+func CreateDictTableTwoTranslatorFromDBWithConfig(db *sql.DB, typeConfig, dataConfig *TableConfig) DictTableTwoTranslator {goCover_3ffe0e214acd__78[0] = 5 ; goCover_3ffe0e214acd__78[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__78[2] = 78 ; goCover_3ffe0e214acd__78[3] = 1;
+	if typeConfig == nil {goCover_3ffe0e214acd__78[6] = 1;
+		typeConfig = DefaultDictTypeTableConfig("sys_dict_type")
+	}
+	goCover_3ffe0e214acd__78[4] = 1;if dataConfig == nil {goCover_3ffe0e214acd__78[7] = 1;
+		dataConfig = DefaultDictDataTableConfig("sys_dict_data")
+	}
+	goCover_3ffe0e214acd__78[5] = 1;return &sqlDictTableTwo{db: db, typeCfg: typeConfig, dataCfg: dataConfig}
+}
+
+// sqlDictTableTwo 基于 database/sql 的双表字典后端：先确认类型存在且启用，再查数据表
+type sqlDictTableTwo struct {
+	db      *sql.DB
+	typeCfg *TableConfig
+	dataCfg *TableConfig
+}
+
+func (t *sqlDictTableTwo) typeEnabled(ctx context.Context, dictTypeCode string) (bool, error) {goCover_3ffe0e214acd__79[0] = 3 ; goCover_3ffe0e214acd__79[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__79[2] = 79 ; goCover_3ffe0e214acd__79[3] = 1;
+	query, args := t.typeCfg.BuildTypeCheckQuery(dictTypeCode)
+	var n int
+	if err := t.db.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {goCover_3ffe0e214acd__79[5] = 1;
+		return false, fmt.Errorf("查询字典类型失败: %w", err)
+	}
+	goCover_3ffe0e214acd__79[4] = 1;return n > 0, nil
+}
+
+func (t *sqlDictTableTwo) QueryDict(dictTypeCode, dictKey string) (string, error) {goCover_3ffe0e214acd__80[0] = 1 ; goCover_3ffe0e214acd__80[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__80[2] = 80 ; goCover_3ffe0e214acd__80[3] = 1;
+	return t.QueryDictContext(context.Background(), dictTypeCode, dictKey)
+}
+
+func (t *sqlDictTableTwo) QueryDictContext(ctx context.Context, dictTypeCode, dictKey string) (string, error) {goCover_3ffe0e214acd__81[0] = 7 ; goCover_3ffe0e214acd__81[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__81[2] = 81 ; goCover_3ffe0e214acd__81[3] = 1;
+	ok, err := t.typeEnabled(ctx, dictTypeCode)
+	if err != nil || !ok {goCover_3ffe0e214acd__81[6] = 1;
+		return "", err
+	}
+	goCover_3ffe0e214acd__81[4] = 1;query, args := t.dataCfg.BuildQueryWithKey(dictTypeCode, dictKey)
+	var result string
+	if err := t.db.QueryRowContext(ctx, query, args...).Scan(&result); err != nil {goCover_3ffe0e214acd__81[7] = 1;
+		if err == sql.ErrNoRows {goCover_3ffe0e214acd__81[9] = 1;
+			return "", nil
+		}
+		goCover_3ffe0e214acd__81[8] = 1;return "", fmt.Errorf("查询字典数据失败: %w", err)
+	}
+	goCover_3ffe0e214acd__81[5] = 1;return result, nil
+}
+
+func (t *sqlDictTableTwo) QueryDictBatch(ctx context.Context, dictTypeCode string, dictKeys []string) (map[string]string, error) {goCover_3ffe0e214acd__82[0] = 5 ; goCover_3ffe0e214acd__82[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__82[2] = 82 ; goCover_3ffe0e214acd__82[3] = 1;
+	if len(dictKeys) == 0 {goCover_3ffe0e214acd__82[6] = 1;
+		return map[string]string{}, nil
+	}
+	goCover_3ffe0e214acd__82[4] = 1;ok, err := t.typeEnabled(ctx, dictTypeCode)
+	if err != nil || !ok {goCover_3ffe0e214acd__82[7] = 1;
+		return nil, err
+	}
+	goCover_3ffe0e214acd__82[5] = 1;query, args := t.dataCfg.BuildQueryIn(dictTypeCode, dictKeys)
+	return scanKeyValues(ctx, t.db, query, args, "查询字典数据失败")
+}
+
+func (t *sqlDictTableTwo) LoadDict(ctx context.Context, dictTypeCode string) (map[string]string, error) {goCover_3ffe0e214acd__83[0] = 3 ; goCover_3ffe0e214acd__83[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__83[2] = 83 ; goCover_3ffe0e214acd__83[3] = 1;
+	ok, err := t.typeEnabled(ctx, dictTypeCode)
+	if err != nil || !ok {goCover_3ffe0e214acd__83[5] = 1;
+		return nil, err
+	}
+	goCover_3ffe0e214acd__83[4] = 1;query, args := t.dataCfg.BuildQueryAll(dictTypeCode)
+	return scanKeyValues(ctx, t.db, query, args, "预加载字典数据失败")
+}

@@ -1,0 +1,731 @@
+//line /Users/mouxiaojun/project/golang-dependencies/dict_trans/dict.go:1:1
+// Package dict translates coded struct fields into display text using struct tags.
+//
+// A field such as
+//
+//	Status string `dict:"status" dictField:"StatusName"`
+//
+// is looked up in the dictionary named "status" and the result is written into
+// the sibling field StatusName. Sources are in-memory dictionaries (RegisterDict),
+// enums (RegisterEnum), database dictionary tables (RegisterDictTableTranslator,
+// RegisterDictTableTwoTranslator, RegisterDBTranslator) or custom translators
+// (RegisterTranslator). Translate walks nested structs, pointers and slices;
+// BatchTranslate adds a parallel worker pool for large slices.
+//
+// TranslateWith adds functional options: WithContext for cancellation (passed to
+// translators implementing ContextTranslator), WithParallel for a worker pool and
+// WithoutPrefetch to disable the two-phase database prefetch that turns N+1 lookups
+// into one IN query per dictionary group.
+//
+// Translation is best-effort: unknown dictionaries or missing target fields are
+// skipped silently; only translator errors (for example database failures) are
+// returned. All functions are safe for concurrent use; the registry is
+// copy-on-write, so register dictionaries at startup.
+//
+// The package has no dependencies outside the standard library.
+package dict
+
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"strings"
+	"sync"
+	"sync/atomic"
+)
+
+// DictManager 字典管理器
+type DictManager struct {
+	reg             atomic.Pointer[registry]       // 字典 / 翻译器注册表（写时复制，读路径无锁）
+	regWrite        sync.Mutex                     // 串行化注册表写者
+	unwrappers      []UnWrapper                    // 包装类型解包器
+	configCache     map[reflect.Type]*structConfig // 配置缓存
+	configMutex     sync.RWMutex                   // 配置缓存互斥锁
+	maskConfigCache map[reflect.Type]*maskConfig   // 脱敏配置缓存（独立于翻译配置）
+	maskConfigMutex sync.RWMutex                   // 脱敏配置缓存互斥锁
+}
+
+// registry 字典与自定义翻译器注册表。读多写少（注册在启动期、翻译在热路径），
+// 用 atomic.Pointer 做写时复制：读是一次原子 Load，不与其他 goroutine 争锁；
+// 写在 regWrite 下拷贝一份再 Store。
+// ponytail: 每次注册全量拷贝两张小 map，注册次数少可接受。
+type registry struct {
+	dicts       map[string]map[string]string // dictName -> {key: value}
+	translators map[string]Translator        // tagName -> Translator
+	formats     map[string]MaskFormatter     // mask 格式名 -> 脱敏格式（自定义，按管理器隔离）
+}
+
+var emptyRegistry = &registry{}
+
+// loadReg 读取当前注册表（未注册过时返回空表）
+func (dm *DictManager) loadReg() *registry {goCover_3ffe0e214acd__41[0] = 3 ; goCover_3ffe0e214acd__41[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__41[2] = 41 ; goCover_3ffe0e214acd__41[3] = 1;
+	if r := dm.reg.Load(); r != nil {goCover_3ffe0e214acd__41[5] = 1;
+		return r
+	}
+	goCover_3ffe0e214acd__41[4] = 1;return emptyRegistry
+}
+
+// updateReg 写时复制地更新注册表
+func (dm *DictManager) updateReg(fn func(*registry)) {goCover_3ffe0e214acd__42[0] = 8 ; goCover_3ffe0e214acd__42[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__42[2] = 42 ; goCover_3ffe0e214acd__42[3] = 1;
+	dm.regWrite.Lock()
+	defer dm.regWrite.Unlock()
+	old := dm.loadReg()
+	next := &registry{
+		dicts:       make(map[string]map[string]string, len(old.dicts)+1),
+		translators: make(map[string]Translator, len(old.translators)+1),
+		formats:     make(map[string]MaskFormatter, len(old.formats)+1),
+	}
+	goCover_3ffe0e214acd__42[4] = 1;for k, v := range old.dicts {goCover_3ffe0e214acd__42[8] = 1;
+		next.dicts[k] = v
+	}
+	goCover_3ffe0e214acd__42[5] = 1;for k, v := range old.translators {goCover_3ffe0e214acd__42[9] = 1;
+		next.translators[k] = v
+	}
+	goCover_3ffe0e214acd__42[6] = 1;for k, v := range old.formats {goCover_3ffe0e214acd__42[10] = 1;
+		next.formats[k] = v
+	}
+	goCover_3ffe0e214acd__42[7] = 1;fn(next)
+	dm.reg.Store(next)
+}
+
+// NewDictManager 创建一个独立的字典管理器：有自己的字典 / 翻译器注册表与配置缓存，
+// 适合需要隔离的场景（多租户、测试）。包级函数使用内部的默认管理器。
+// 注意：DB / 字典表翻译的结果缓存仍是进程级的（围绕用户注册的后端），不随管理器隔离。
+func NewDictManager() *DictManager {goCover_3ffe0e214acd__43[0] = 1 ; goCover_3ffe0e214acd__43[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__43[2] = 43 ; goCover_3ffe0e214acd__43[3] = 1;
+	return &DictManager{
+		unwrappers:      make([]UnWrapper, 0),
+		configCache:     make(map[reflect.Type]*structConfig),
+		maskConfigCache: make(map[reflect.Type]*maskConfig),
+	}
+}
+
+// walk 一次翻译遍历的私有状态（不放在 DictManager 上）：
+//   - ctx：TranslateWith(WithContext) 传入，进结构体时检查取消，并传给实现了 ContextTranslator 的翻译器
+//   - collect：非 nil 表示"收集模式"——只收集 DB 类翻译器要查的 key，不翻译；用于批量前一次 IN 查询预热缓存
+//   - visited 集：记录已进入过的指针目标，防止自引用/环形结构无限递归。
+//     只有经指针到达的结构体才需要记录（值类型嵌套不可能成环），map 惰性分配，无指针的常见场景零开销。
+//     以 (地址, 类型) 为键：外层结构体与其第一个字段地址相同，只用地址会误判。
+type walk struct {
+	ctx     context.Context
+	collect map[*lookupTranslator][]string
+	mu      *sync.Mutex // 并行批量时多个 worker 共享一份 walk，用它保护 visited 集；顺序翻译为 nil
+	small   [4]visitKey // 前几个指针目标放栈上，常见 DTO 不碰堆
+	n       int
+	m       map[visitKey]struct{} // 溢出后才分配
+}
+
+type visitKey struct {
+	addr uintptr
+	typ  reflect.Type
+}
+
+// mark 记录一个指针目标；已记录过返回 false（调用方跳过）。
+func (seen *walk) mark(rv reflect.Value) bool {goCover_3ffe0e214acd__44[0] = 14 ; goCover_3ffe0e214acd__44[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__44[2] = 44 ; goCover_3ffe0e214acd__44[3] = 1;
+	if !rv.CanAddr() {goCover_3ffe0e214acd__44[10] = 1;
+		return true
+	}
+	goCover_3ffe0e214acd__44[4] = 1;if seen.mu != nil {goCover_3ffe0e214acd__44[11] = 1;
+		seen.mu.Lock()
+		defer seen.mu.Unlock()
+	}
+	goCover_3ffe0e214acd__44[5] = 1;key := visitKey{addr: rv.UnsafeAddr(), typ: rv.Type()}
+	for i := 0; i < seen.n; i++ {goCover_3ffe0e214acd__44[12] = 1;
+		if seen.small[i] == key {goCover_3ffe0e214acd__44[13] = 1;
+			return false
+		}
+	}
+	goCover_3ffe0e214acd__44[6] = 1;if _, ok := seen.m[key]; ok {goCover_3ffe0e214acd__44[14] = 1;
+		return false
+	}
+	goCover_3ffe0e214acd__44[7] = 1;if seen.n < len(seen.small) {goCover_3ffe0e214acd__44[15] = 1;
+		seen.small[seen.n] = key
+		seen.n++
+		return true
+	}
+	goCover_3ffe0e214acd__44[8] = 1;if seen.m == nil {goCover_3ffe0e214acd__44[16] = 1;
+		seen.m = make(map[visitKey]struct{})
+	}
+	goCover_3ffe0e214acd__44[9] = 1;seen.m[key] = struct{}{}
+	return true
+}
+
+var defaultManager = NewDictManager()
+
+// structConfig 结构体配置缓存
+type structConfig struct {
+	fields    []fieldConfig
+	byIndex   []*fieldConfig // 按字段下标预建的索引，长度 = NumField，无配置处为 nil
+	steps     []fieldStep    // 翻译时真正要看的字段（嵌套 或 带翻译标签），普通字段不进循环
+	noop      bool           // 没有任何可设置字段（如 time.Time），翻译时直接跳过、不记 visited
+	mayLookup bool           // 自身有 DB 类翻译器，或有嵌套 struct/ptr/slice 字段（可能藏着）——决定批量前要不要走收集遍历
+}
+
+// fieldStep 一个字段在翻译遍历中的预算好的动作：nested 表示要递归进去（struct / *struct / slice），cfg 表示要翻译
+type fieldStep struct {
+	index  int
+	nested nestedKind
+	cfg    *fieldConfig
+}
+
+type nestedKind uint8
+
+const (
+	nestedNone nestedKind = iota
+	nestedStruct
+	nestedPtr
+	nestedSlice
+)
+
+// fieldConfig 字段配置（getOrCreateConfig 时一次算好，翻译热路径零解析）
+type fieldConfig struct {
+	fieldIndex       int
+	fieldName        string
+	targetField      string
+	targetFieldIndex int    // 缓存目标字段索引，避免每次查找
+	translatorTag    string // 原始 tag（传给翻译器）
+	dictName         string // dict 标签：逗号前的字典名，预先拆好
+	translator       Translator
+}
+
+// RegisterDict 注册字典
+func RegisterDict(name string, dict map[string]string) {goCover_3ffe0e214acd__45[0] = 1 ; goCover_3ffe0e214acd__45[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__45[2] = 45 ; goCover_3ffe0e214acd__45[3] = 1;
+	defaultManager.RegisterDict(name, dict)
+}
+
+// GetDict 获取字典
+func GetDict(name string) map[string]string {goCover_3ffe0e214acd__46[0] = 1 ; goCover_3ffe0e214acd__46[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__46[2] = 46 ; goCover_3ffe0e214acd__46[3] = 1;
+	return defaultManager.GetDict(name)
+}
+
+// Translate 翻译结构体
+func Translate(v any) error {goCover_3ffe0e214acd__47[0] = 1 ; goCover_3ffe0e214acd__47[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__47[2] = 47 ; goCover_3ffe0e214acd__47[3] = 1;
+	return defaultManager.Translate(v)
+}
+
+// RegisterTranslator 注册自定义翻译器
+func RegisterTranslator(tagName string, translator Translator) {goCover_3ffe0e214acd__48[0] = 1 ; goCover_3ffe0e214acd__48[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__48[2] = 48 ; goCover_3ffe0e214acd__48[3] = 1;
+	defaultManager.RegisterTranslator(tagName, translator)
+}
+
+// RegisterDict 注册字典（实例方法，并发安全）
+func (dm *DictManager) RegisterDict(name string, dict map[string]string) {goCover_3ffe0e214acd__49[0] = 2 ; goCover_3ffe0e214acd__49[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__49[2] = 49 ; goCover_3ffe0e214acd__49[3] = 1;
+	dm.updateReg(func(r *registry) {goCover_3ffe0e214acd__49[4] = 1; r.dicts[name] = dict })
+}
+
+// GetDict 获取字典（实例方法，并发安全）
+func (dm *DictManager) GetDict(name string) map[string]string {goCover_3ffe0e214acd__50[0] = 1 ; goCover_3ffe0e214acd__50[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__50[2] = 50 ; goCover_3ffe0e214acd__50[3] = 1;
+	return dm.loadReg().dicts[name]
+}
+
+// RegisterTranslator 注册自定义翻译器（实例方法，并发安全）。
+// 结构体配置缓存里固化了翻译器实例，注册后清空缓存，保证已翻译过的类型也能拿到新翻译器。
+func (dm *DictManager) RegisterTranslator(tagName string, translator Translator) {goCover_3ffe0e214acd__51[0] = 3 ; goCover_3ffe0e214acd__51[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__51[2] = 51 ; goCover_3ffe0e214acd__51[3] = 1;
+	dm.updateReg(func(r *registry) {goCover_3ffe0e214acd__51[5] = 1; r.translators[tagName] = translator })
+
+	goCover_3ffe0e214acd__51[4] = 1;dm.configMutex.Lock()
+	dm.configCache = make(map[reflect.Type]*structConfig)
+	dm.configMutex.Unlock()
+}
+
+// Translate 翻译结构体（实例方法）
+func (dm *DictManager) Translate(v any) error {goCover_3ffe0e214acd__52[0] = 1 ; goCover_3ffe0e214acd__52[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__52[2] = 52 ; goCover_3ffe0e214acd__52[3] = 1;
+	return dm.TranslateWith(v)
+}
+
+// Option TranslateWith 的函数式选项
+type Option func(*translateOpts)
+
+type translateOpts struct {
+	ctx        context.Context
+	parallel   bool
+	noPrefetch bool
+}
+
+// WithContext 传入 ctx：进每个结构体前检查取消；实现了 ContextTranslator 的翻译器（含内置 DB 类）会收到它
+func WithContext(ctx context.Context) Option {goCover_3ffe0e214acd__53[0] = 2 ; goCover_3ffe0e214acd__53[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__53[2] = 53 ; goCover_3ffe0e214acd__53[3] = 1; return func(o *translateOpts) {goCover_3ffe0e214acd__53[4] = 1; o.ctx = ctx } }
+
+// WithParallel 切片长度 >= 10 时用 worker pool 并行翻译（等价于 BatchTranslate(items, true)）
+func WithParallel() Option {goCover_3ffe0e214acd__54[0] = 2 ; goCover_3ffe0e214acd__54[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__54[2] = 54 ; goCover_3ffe0e214acd__54[3] = 1; return func(o *translateOpts) {goCover_3ffe0e214acd__54[4] = 1; o.parallel = true } }
+
+// WithoutPrefetch 关闭切片批量前的 DB 预取（默认：元素数 >= Config.Performance.BatchQueryThreshold 时，
+// 先收集所有 DB 类字段的 key，按分组一次 IN 查询预热缓存，把 N+1 变成 1）
+func WithoutPrefetch() Option {goCover_3ffe0e214acd__55[0] = 2 ; goCover_3ffe0e214acd__55[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__55[2] = 55 ; goCover_3ffe0e214acd__55[3] = 1; return func(o *translateOpts) {goCover_3ffe0e214acd__55[4] = 1; o.noPrefetch = true } }
+
+func buildOpts(opts []Option) translateOpts {goCover_3ffe0e214acd__56[0] = 3 ; goCover_3ffe0e214acd__56[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__56[2] = 56 ; goCover_3ffe0e214acd__56[3] = 1;
+	var o translateOpts
+	for _, opt := range opts {goCover_3ffe0e214acd__56[5] = 1;
+		opt(&o)
+	}
+	goCover_3ffe0e214acd__56[4] = 1;return o
+}
+
+// TranslateWith 带选项翻译：v 是 *Struct 或 *[]Struct / *[]*Struct（包装类型会先解包）
+func TranslateWith(v any, opts ...Option) error {goCover_3ffe0e214acd__57[0] = 1 ; goCover_3ffe0e214acd__57[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__57[2] = 57 ; goCover_3ffe0e214acd__57[3] = 1;
+	return defaultManager.TranslateWith(v, opts...)
+}
+
+// TranslateWith 带选项翻译（实例方法）
+func (dm *DictManager) TranslateWith(v any, opts ...Option) error {goCover_3ffe0e214acd__58[0] = 12 ; goCover_3ffe0e214acd__58[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__58[2] = 58 ; goCover_3ffe0e214acd__58[3] = 1;
+	var o translateOpts
+	if len(opts) > 0 {goCover_3ffe0e214acd__58[10] = 1;
+		o = buildOpts(opts) // 只有真传了选项才有一次堆分配，Translate(v) 零开销
+	}
+
+	// 尝试解包包装类型
+	goCover_3ffe0e214acd__58[4] = 1;if unwrapped, ok := dm.tryUnwrap(v); ok {goCover_3ffe0e214acd__58[11] = 1;
+		v = unwrapped
+	}
+
+	goCover_3ffe0e214acd__58[5] = 1;rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Ptr {goCover_3ffe0e214acd__58[12] = 1;
+		return ErrNotPointer
+	}
+	goCover_3ffe0e214acd__58[6] = 1;rv = rv.Elem()
+
+	goCover_3ffe0e214acd__58[7] = 1;if rv.Kind() == reflect.Slice {goCover_3ffe0e214acd__58[13] = 1;
+		return dm.translateSliceOpts(rv, &o)
+	}
+	goCover_3ffe0e214acd__58[8] = 1;if rv.Kind() != reflect.Struct {goCover_3ffe0e214acd__58[14] = 1;
+		return ErrNotStruct
+	}
+	goCover_3ffe0e214acd__58[9] = 1;return dm.translateStructV(rv, &walk{ctx: o.ctx}, false)
+}
+
+// translateSliceOpts 顶层切片：预取 → 并行 / 顺序
+func (dm *DictManager) translateSliceOpts(sliceValue reflect.Value, o *translateOpts) error {goCover_3ffe0e214acd__59[0] = 5 ; goCover_3ffe0e214acd__59[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__59[2] = 59 ; goCover_3ffe0e214acd__59[3] = 1;
+	if err := dm.prefetchSlice(sliceValue, o); err != nil {goCover_3ffe0e214acd__59[6] = 1;
+		return err
+	}
+	goCover_3ffe0e214acd__59[4] = 1;if o.parallel && sliceValue.Len() >= 10 {goCover_3ffe0e214acd__59[7] = 1;
+		return dm.batchTranslateParallel(sliceValue, o.ctx)
+	}
+	goCover_3ffe0e214acd__59[5] = 1;return dm.translateSlice(sliceValue, o.ctx)
+}
+
+// translateSlice 翻译顶层切片：整个切片共享一份 visited。
+// 顶层元素本身不记 visited（平铺 []*Row 零开销），只记从元素内部经指针到达的目标，
+// 所以父子链 / 树形数据里被多个元素共享的子图只走一次，总体 O(n) 而不是 O(n²)。
+func (dm *DictManager) translateSlice(sliceValue reflect.Value, ctx context.Context) error {goCover_3ffe0e214acd__60[0] = 6 ; goCover_3ffe0e214acd__60[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__60[2] = 60 ; goCover_3ffe0e214acd__60[3] = 1;
+	w := &walk{ctx: ctx}
+	for i := 0; i < sliceValue.Len(); i++ {goCover_3ffe0e214acd__60[5] = 1;
+		elem, ok := sliceElemStruct(sliceValue.Index(i))
+		if !ok {goCover_3ffe0e214acd__60[7] = 1;
+			continue
+		}
+		goCover_3ffe0e214acd__60[6] = 1;if err := dm.translateStructV(elem, w, false); err != nil {goCover_3ffe0e214acd__60[8] = 1;
+			return err
+		}
+	}
+	goCover_3ffe0e214acd__60[4] = 1;return nil
+}
+
+// prefetchSlice 批量前的两阶段第一步：收集模式走一遍切片，把 DB 类翻译器要查的 key 按分组攒起来，
+// 每组一次批量查询预热结果缓存（后端不支持批量则跳过）。元素类型不可能含 DB 类字段时零开销。
+func (dm *DictManager) prefetchSlice(sliceValue reflect.Value, o *translateOpts) error {goCover_3ffe0e214acd__61[0] = 17 ; goCover_3ffe0e214acd__61[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__61[2] = 61 ; goCover_3ffe0e214acd__61[3] = 1;
+	n := sliceValue.Len()
+	if o.noPrefetch || n == 0 || n < GetConfig().Performance.BatchQueryThreshold {goCover_3ffe0e214acd__61[10] = 1;
+		return nil
+	}
+	goCover_3ffe0e214acd__61[4] = 1;elemType := sliceValue.Type().Elem()
+	if elemType.Kind() == reflect.Ptr {goCover_3ffe0e214acd__61[11] = 1;
+		elemType = elemType.Elem()
+	}
+	goCover_3ffe0e214acd__61[5] = 1;if elemType.Kind() != reflect.Struct || !dm.getOrCreateConfig(elemType).mayLookup {goCover_3ffe0e214acd__61[12] = 1;
+		return nil
+	}
+
+	goCover_3ffe0e214acd__61[6] = 1;w := &walk{ctx: o.ctx, collect: make(map[*lookupTranslator][]string)}
+	for i := 0; i < n; i++ {goCover_3ffe0e214acd__61[13] = 1;
+		elem, ok := sliceElemStruct(sliceValue.Index(i))
+		if !ok {goCover_3ffe0e214acd__61[15] = 1;
+			continue
+		}
+		goCover_3ffe0e214acd__61[14] = 1;if err := dm.translateStructV(elem, w, false); err != nil {goCover_3ffe0e214acd__61[16] = 1;
+			return err
+		}
+	}
+	goCover_3ffe0e214acd__61[7] = 1;ctx := o.ctx
+	if ctx == nil {goCover_3ffe0e214acd__61[17] = 1;
+		ctx = context.Background()
+	}
+	goCover_3ffe0e214acd__61[8] = 1;for lt, keys := range w.collect {goCover_3ffe0e214acd__61[18] = 1;
+		if err := lt.mgr.prefetch(ctx, lt.group, lt.parts, keys); err != nil {goCover_3ffe0e214acd__61[19] = 1;
+			return err
+		}
+	}
+	goCover_3ffe0e214acd__61[9] = 1;return nil
+}
+
+// sliceElemStruct 取切片元素指向的结构体（解一层指针，nil 跳过）
+func sliceElemStruct(elem reflect.Value) (reflect.Value, bool) {goCover_3ffe0e214acd__62[0] = 5 ; goCover_3ffe0e214acd__62[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__62[2] = 62 ; goCover_3ffe0e214acd__62[3] = 1;
+	if elem.Kind() == reflect.Ptr {goCover_3ffe0e214acd__62[5] = 1;
+		if elem.IsNil() {goCover_3ffe0e214acd__62[7] = 1;
+			return elem, false
+		}
+		goCover_3ffe0e214acd__62[6] = 1;elem = elem.Elem()
+	}
+	goCover_3ffe0e214acd__62[4] = 1;return elem, elem.Kind() == reflect.Struct
+}
+
+// translateStructV 翻译结构体。viaPtr=true 表示 rv 是经指针到达的目标，需要记 visited 防环；
+// 值类型嵌套不可能成环，不记。
+func (dm *DictManager) translateStructV(rv reflect.Value, seen *walk, viaPtr bool) error {goCover_3ffe0e214acd__63[0] = 26 ; goCover_3ffe0e214acd__63[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__63[2] = 63 ; goCover_3ffe0e214acd__63[3] = 1;
+	rt := rv.Type()
+
+	// 获取或创建配置缓存（含按字段下标预建的索引）
+	goCover_3ffe0e214acd__63[4] = 1;config := dm.getOrCreateConfig(rt)
+	if config.noop {goCover_3ffe0e214acd__63[9] = 1;
+		return nil
+	}
+	goCover_3ffe0e214acd__63[5] = 1;if viaPtr && !seen.mark(rv) {goCover_3ffe0e214acd__63[10] = 1;
+		return nil
+	}
+	goCover_3ffe0e214acd__63[6] = 1;if seen.ctx != nil {goCover_3ffe0e214acd__63[11] = 1;
+		if err := seen.ctx.Err(); err != nil {goCover_3ffe0e214acd__63[12] = 1;
+			return err
+		}
+	}
+
+	// 只走预算好的字段：嵌套的递归进去，带标签的翻译；普通字段根本不碰
+	goCover_3ffe0e214acd__63[7] = 1;for i := range config.steps {goCover_3ffe0e214acd__63[13] = 1;
+		st := &config.steps[i]
+		field := rv.Field(st.index)
+
+		// 先处理嵌套，再处理当前字段的翻译
+		goCover_3ffe0e214acd__63[14] = 1;switch st.nested {
+		case nestedStruct:goCover_3ffe0e214acd__63[16] = 1;
+			if err := dm.translateStructV(field, seen, false); err != nil {goCover_3ffe0e214acd__63[19] = 1;
+				return err
+			}
+		case nestedPtr:goCover_3ffe0e214acd__63[17] = 1;
+			// 指针目标可能成环，viaPtr=true 记 visited
+			if !field.IsNil() {goCover_3ffe0e214acd__63[20] = 1;
+				if err := dm.translateStructV(field.Elem(), seen, true); err != nil {goCover_3ffe0e214acd__63[21] = 1;
+					return err
+				}
+			}
+		case nestedSlice:goCover_3ffe0e214acd__63[18] = 1;
+			if err := dm.translateSliceV(field, seen); err != nil {goCover_3ffe0e214acd__63[22] = 1;
+				return err
+			}
+		}
+
+		// 处理翻译标签（dict, enum, translator等）
+		goCover_3ffe0e214acd__63[15] = 1;if fieldCfg := st.cfg; fieldCfg != nil {goCover_3ffe0e214acd__63[23] = 1;
+			if fieldCfg.translator != nil {goCover_3ffe0e214acd__63[24] = 1;
+				if err := dm.translateFieldWithTranslator(field, fieldCfg, rv, seen); err != nil {goCover_3ffe0e214acd__63[25] = 1;
+					return err
+				}
+			} else{ goCover_3ffe0e214acd__63[26] = 1;if fieldCfg.dictName != "" && seen.collect == nil {goCover_3ffe0e214acd__63[27] = 1;
+				// 兼容旧的 dict 标签（内存字典，收集模式下无事可做）
+				if err := dm.translateField(field, fieldCfg, rv); err != nil {goCover_3ffe0e214acd__63[28] = 1;
+					return err
+				}
+			}}
+		}
+	}
+
+	goCover_3ffe0e214acd__63[8] = 1;return nil
+}
+
+// getOrCreateConfig 获取或创建配置缓存（线程安全）
+func (dm *DictManager) getOrCreateConfig(rt reflect.Type) *structConfig {goCover_3ffe0e214acd__64[0] = 59 ; goCover_3ffe0e214acd__64[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__64[2] = 64 ; goCover_3ffe0e214acd__64[3] = 1;
+	// 先尝试读锁获取
+	dm.configMutex.RLock()
+	if config, ok := dm.configCache[rt]; ok {goCover_3ffe0e214acd__64[15] = 1;
+		dm.configMutex.RUnlock()
+		return config
+	}
+	goCover_3ffe0e214acd__64[4] = 1;dm.configMutex.RUnlock()
+
+	// 需要创建配置，使用写锁
+	goCover_3ffe0e214acd__64[5] = 1;dm.configMutex.Lock()
+	defer dm.configMutex.Unlock()
+
+	// 双重检查，防止并发创建
+	goCover_3ffe0e214acd__64[6] = 1;if config, ok := dm.configCache[rt]; ok {goCover_3ffe0e214acd__64[16] = 1;
+		return config
+	}
+
+	goCover_3ffe0e214acd__64[7] = 1;config := &structConfig{
+		fields: make([]fieldConfig, 0),
+	}
+
+	goCover_3ffe0e214acd__64[8] = 1;for i := 0; i < rt.NumField(); i++ {goCover_3ffe0e214acd__64[17] = 1;
+		fieldType := rt.Field(i)
+
+		// 检查各种翻译标签
+		goCover_3ffe0e214acd__64[18] = 1;dictTag := fieldType.Tag.Get("dict")
+		dictTableTag := fieldType.Tag.Get("dictTable")
+		dictTableTwoTag := fieldType.Tag.Get("dictTableTwo")
+		enumTag := fieldType.Tag.Get("enum")
+		translateTag := fieldType.Tag.Get("translate")
+		dbTag := fieldType.Tag.Get("db")
+		dictFieldTag := fieldType.Tag.Get("dictField")
+
+		goCover_3ffe0e214acd__64[19] = 1;fieldCfg := fieldConfig{
+			fieldIndex:       i,
+			fieldName:        fieldType.Name,
+			targetField:      dictFieldTag,
+			targetFieldIndex: -1, // 初始化为 -1，表示未找到
+		}
+
+		// 优先级: translate > db > dictTableTwo > dictTable > enum > dict
+		goCover_3ffe0e214acd__64[20] = 1;if translateTag != "" {goCover_3ffe0e214acd__64[22] = 1;
+			// 自定义翻译器
+			parts := strings.Split(translateTag, ",")
+			tagName := parts[0]
+			if translator, ok := dm.loadReg().translators[tagName]; ok {goCover_3ffe0e214acd__64[23] = 1;
+				fieldCfg.translator = translator
+				fieldCfg.translatorTag = translateTag
+			}
+		} else{ goCover_3ffe0e214acd__64[24] = 1;if dbTag != "" {goCover_3ffe0e214acd__64[25] = 1;
+			// 数据库翻译（类似 Easy Trans 的自动查表）
+			// 格式: db:"table=user,key=id,value=name"
+			translator := parseDBTag(dbTag)
+			if translator != nil {goCover_3ffe0e214acd__64[26] = 1;
+				fieldCfg.translator = translator
+				fieldCfg.translatorTag = dbTag
+			}
+		} else{ goCover_3ffe0e214acd__64[27] = 1;if dictTableTwoTag != "" {goCover_3ffe0e214acd__64[28] = 1;
+			// 双表字典翻译（字典类型表+字典数据表）
+			translator := createDictTableTwoTranslator(dictTableTwoTag)
+			fieldCfg.translator = translator
+			fieldCfg.translatorTag = dictTableTwoTag
+		} else{ goCover_3ffe0e214acd__64[29] = 1;if dictTableTag != "" {goCover_3ffe0e214acd__64[30] = 1;
+			// 字典表翻译（从数据库字典表读取，单表）
+			translator := createDictTableTranslator(dictTableTag)
+			fieldCfg.translator = translator
+			fieldCfg.translatorTag = dictTableTag
+		} else{ goCover_3ffe0e214acd__64[31] = 1;if enumTag != "" {goCover_3ffe0e214acd__64[32] = 1;
+			// 枚举翻译
+			fieldCfg.translator = DefaultEnumTranslator()
+			fieldCfg.translatorTag = enumTag
+		} else{ goCover_3ffe0e214acd__64[33] = 1;if dictTag != "" {goCover_3ffe0e214acd__64[34] = 1;
+			// 字典翻译（兼容旧版本，内存字典）：逗号前是字典名，这里拆好，热路径不再 Split
+			fieldCfg.translatorTag = dictTag
+			fieldCfg.dictName = dictTag
+			if j := strings.IndexByte(dictTag, ','); j >= 0 {goCover_3ffe0e214acd__64[35] = 1;
+				fieldCfg.dictName = dictTag[:j]
+			}
+		}}}}}}
+
+		goCover_3ffe0e214acd__64[21] = 1;if fieldCfg.translator != nil || fieldCfg.translatorTag != "" {goCover_3ffe0e214acd__64[36] = 1;
+			// 查找并缓存目标字段索引，避免运行时查找
+			if fieldCfg.targetField != "" {goCover_3ffe0e214acd__64[38] = 1;
+				for j := 0; j < rt.NumField(); j++ {goCover_3ffe0e214acd__64[39] = 1;
+					structField := rt.Field(j)
+					if structField.Name == fieldCfg.targetField || strings.EqualFold(structField.Name, fieldCfg.targetField) {goCover_3ffe0e214acd__64[40] = 1;
+						fieldCfg.targetFieldIndex = j
+						break
+					}
+				}
+			}
+			goCover_3ffe0e214acd__64[37] = 1;config.fields = append(config.fields, fieldCfg)
+		}
+	}
+
+	// 按字段下标预建索引，避免每次翻译都重建 map
+	goCover_3ffe0e214acd__64[9] = 1;config.byIndex = make([]*fieldConfig, rt.NumField())
+	for i := range config.fields {goCover_3ffe0e214acd__64[41] = 1;
+		config.byIndex[config.fields[i].fieldIndex] = &config.fields[i]
+	}
+
+	// 预算遍历步骤：只有"嵌套结构（struct / *struct / []struct / []*struct）"或"带翻译标签"的导出字段才进热路径
+	goCover_3ffe0e214acd__64[10] = 1;for i := 0; i < rt.NumField(); i++ {goCover_3ffe0e214acd__64[42] = 1;
+		sf := rt.Field(i)
+		if !sf.IsExported() {goCover_3ffe0e214acd__64[45] = 1;
+			continue
+		}
+		goCover_3ffe0e214acd__64[43] = 1;st := fieldStep{index: i, cfg: config.byIndex[i]}
+		switch ft := sf.Type; ft.Kind() {
+		case reflect.Struct:goCover_3ffe0e214acd__64[46] = 1;
+			st.nested = nestedStruct
+		case reflect.Ptr:goCover_3ffe0e214acd__64[47] = 1;
+			if ft.Elem().Kind() == reflect.Struct {goCover_3ffe0e214acd__64[49] = 1;
+				st.nested = nestedPtr
+			}
+		case reflect.Slice:goCover_3ffe0e214acd__64[48] = 1;
+			if et := ft.Elem(); et.Kind() == reflect.Struct || (et.Kind() == reflect.Ptr && et.Elem().Kind() == reflect.Struct) {goCover_3ffe0e214acd__64[50] = 1;
+				st.nested = nestedSlice
+			}
+		}
+		goCover_3ffe0e214acd__64[44] = 1;if st.nested != nestedNone || st.cfg != nil {goCover_3ffe0e214acd__64[51] = 1;
+			config.steps = append(config.steps, st)
+		}
+	}
+
+	// 没有导出字段的结构体（time.Time 等）翻译时什么都做不了，标记为 noop
+	goCover_3ffe0e214acd__64[11] = 1;config.noop = true
+	for i := 0; i < rt.NumField(); i++ {goCover_3ffe0e214acd__64[52] = 1;
+		if rt.Field(i).IsExported() {goCover_3ffe0e214acd__64[53] = 1;
+			config.noop = false
+			break
+		}
+	}
+
+	// 可能需要 DB 预取：自身字段挂了 lookupTranslator，或有嵌套 struct / ptr / slice（里面可能有）
+	goCover_3ffe0e214acd__64[12] = 1;for i := range config.fields {goCover_3ffe0e214acd__64[54] = 1;
+		if _, ok := config.fields[i].translator.(*lookupTranslator); ok {goCover_3ffe0e214acd__64[55] = 1;
+			config.mayLookup = true
+			break
+		}
+	}
+	goCover_3ffe0e214acd__64[13] = 1;if !config.mayLookup {goCover_3ffe0e214acd__64[56] = 1;
+		for i := 0; i < rt.NumField(); i++ {goCover_3ffe0e214acd__64[57] = 1;
+			switch rt.Field(i).Type.Kind() {
+			case reflect.Struct, reflect.Ptr, reflect.Slice:goCover_3ffe0e214acd__64[59] = 1;
+				if rt.Field(i).IsExported() {goCover_3ffe0e214acd__64[60] = 1;
+					config.mayLookup = true
+				}
+			}
+			goCover_3ffe0e214acd__64[58] = 1;if config.mayLookup {goCover_3ffe0e214acd__64[61] = 1;
+				break
+			}
+		}
+	}
+
+	goCover_3ffe0e214acd__64[14] = 1;dm.configCache[rt] = config
+	return config
+}
+
+// translateSliceV 翻译嵌套切片（共享父结构体的 visited，因为元素可能指回父节点）
+func (dm *DictManager) translateSliceV(sliceValue reflect.Value, seen *walk) error {goCover_3ffe0e214acd__65[0] = 6 ; goCover_3ffe0e214acd__65[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__65[2] = 65 ; goCover_3ffe0e214acd__65[3] = 1;
+	for i := 0; i < sliceValue.Len(); i++ {goCover_3ffe0e214acd__65[5] = 1;
+		raw := sliceValue.Index(i)
+		elem, ok := sliceElemStruct(raw)
+		if !ok {goCover_3ffe0e214acd__65[7] = 1;
+			continue
+		}
+		// 指针元素才可能成环，viaPtr 交给 translateStructV 记 visited
+		goCover_3ffe0e214acd__65[6] = 1;if err := dm.translateStructV(elem, seen, raw.Kind() == reflect.Ptr); err != nil {goCover_3ffe0e214acd__65[8] = 1;
+			return err
+		}
+	}
+	goCover_3ffe0e214acd__65[4] = 1;return nil
+}
+
+// translateField 翻译字段
+func (dm *DictManager) translateField(field reflect.Value, fieldCfg *fieldConfig, structValue reflect.Value) error {goCover_3ffe0e214acd__66[0] = 19 ; goCover_3ffe0e214acd__66[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__66[2] = 66 ; goCover_3ffe0e214acd__66[3] = 1;
+	// 获取字典（原子读注册表快照，无锁；字典名已在配置缓存里拆好）
+	dict := dm.loadReg().dicts[fieldCfg.dictName]
+	if dict == nil {goCover_3ffe0e214acd__66[11] = 1;
+		return nil // 字典不存在，跳过
+	}
+
+	// 获取源字段值
+	goCover_3ffe0e214acd__66[4] = 1;if field.Kind() != reflect.String {goCover_3ffe0e214acd__66[12] = 1;
+		return nil // 只支持字符串类型
+	}
+
+	goCover_3ffe0e214acd__66[5] = 1;sourceValue := field.String()
+	if sourceValue == "" {goCover_3ffe0e214acd__66[13] = 1;
+		return nil
+	}
+
+	// 获取翻译后的值
+	goCover_3ffe0e214acd__66[6] = 1;translatedValue := dict[sourceValue]
+	if translatedValue == "" {goCover_3ffe0e214acd__66[14] = 1;
+		return nil
+	}
+
+	// 获取目标字段名
+	goCover_3ffe0e214acd__66[7] = 1;dictFieldTag := fieldCfg.targetField
+	if dictFieldTag == "" {goCover_3ffe0e214acd__66[15] = 1;
+		return nil
+	}
+
+	// 优先使用缓存的字段索引（O(1)）
+	goCover_3ffe0e214acd__66[8] = 1;if fieldCfg.targetFieldIndex >= 0 {goCover_3ffe0e214acd__66[16] = 1;
+		targetField := structValue.Field(fieldCfg.targetFieldIndex)
+		if targetField.CanSet() && targetField.Kind() == reflect.String {goCover_3ffe0e214acd__66[17] = 1;
+			targetField.SetString(translatedValue)
+			return nil
+		}
+	}
+
+	// 回退到遍历查找
+	goCover_3ffe0e214acd__66[9] = 1;structType := structValue.Type()
+	for i := 0; i < structType.NumField(); i++ {goCover_3ffe0e214acd__66[18] = 1;
+		structField := structType.Field(i)
+		// 支持字段名匹配（大小写不敏感）
+		goCover_3ffe0e214acd__66[19] = 1;if structField.Name == dictFieldTag || strings.EqualFold(structField.Name, dictFieldTag) {goCover_3ffe0e214acd__66[20] = 1;
+			targetField := structValue.Field(i)
+			if targetField.CanSet() && targetField.Kind() == reflect.String {goCover_3ffe0e214acd__66[21] = 1;
+				targetField.SetString(translatedValue)
+				break
+			}
+		}
+	}
+
+	goCover_3ffe0e214acd__66[10] = 1;return nil
+}
+
+// translateFieldWithTranslator 使用翻译器翻译字段
+func (dm *DictManager) translateFieldWithTranslator(field reflect.Value, fieldCfg *fieldConfig, structValue reflect.Value, w *walk) error {goCover_3ffe0e214acd__67[0] = 26 ; goCover_3ffe0e214acd__67[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__67[2] = 67 ; goCover_3ffe0e214acd__67[3] = 1;
+	// 获取源字段值
+	var sourceValue any
+	switch field.Kind() {
+	case reflect.String:goCover_3ffe0e214acd__67[12] = 1;
+		sourceValue = field.String()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:goCover_3ffe0e214acd__67[13] = 1;
+		sourceValue = field.Int()
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:goCover_3ffe0e214acd__67[14] = 1;
+		sourceValue = field.Uint()
+	default:goCover_3ffe0e214acd__67[15] = 1;
+		sourceValue = field.Interface()
+	}
+
+	// 收集模式：只记下 DB 类翻译器要查的 key，不翻译
+	goCover_3ffe0e214acd__67[4] = 1;if w.collect != nil {goCover_3ffe0e214acd__67[16] = 1;
+		if lt, ok := fieldCfg.translator.(*lookupTranslator); ok {goCover_3ffe0e214acd__67[18] = 1;
+			w.collect[lt] = append(w.collect[lt], fmt.Sprintf("%v", sourceValue))
+		}
+		goCover_3ffe0e214acd__67[17] = 1;return nil
+	}
+
+	// 调用翻译器：带 ctx 且翻译器支持时走 ContextTranslator
+	goCover_3ffe0e214acd__67[5] = 1;var translatedValue string
+	var err error
+	if ct, ok := fieldCfg.translator.(ContextTranslator); ok && w.ctx != nil {goCover_3ffe0e214acd__67[19] = 1;
+		translatedValue, err = ct.TranslateContext(w.ctx, sourceValue, fieldCfg.fieldName, fieldCfg.translatorTag)
+	} else{ goCover_3ffe0e214acd__67[20] = 1;{
+		translatedValue, err = fieldCfg.translator.Translate(sourceValue, fieldCfg.fieldName, fieldCfg.translatorTag)
+	}}
+	goCover_3ffe0e214acd__67[6] = 1;if err != nil {goCover_3ffe0e214acd__67[21] = 1;
+		return err
+	}
+
+	goCover_3ffe0e214acd__67[7] = 1;if translatedValue == "" {goCover_3ffe0e214acd__67[22] = 1;
+		return nil
+	}
+
+	// 设置目标字段
+	goCover_3ffe0e214acd__67[8] = 1;if fieldCfg.targetField == "" {goCover_3ffe0e214acd__67[23] = 1;
+		return nil
+	}
+
+	// 优先使用缓存的字段索引（O(1)），否则回退到遍历查找（O(n)）
+	goCover_3ffe0e214acd__67[9] = 1;if fieldCfg.targetFieldIndex >= 0 {goCover_3ffe0e214acd__67[24] = 1;
+		targetField := structValue.Field(fieldCfg.targetFieldIndex)
+		if targetField.CanSet() && targetField.Kind() == reflect.String {goCover_3ffe0e214acd__67[25] = 1;
+			targetField.SetString(translatedValue)
+			return nil
+		}
+	}
+
+	// 回退到遍历查找（兼容旧代码或字段索引未找到的情况）
+	goCover_3ffe0e214acd__67[10] = 1;structType := structValue.Type()
+	for i := 0; i < structType.NumField(); i++ {goCover_3ffe0e214acd__67[26] = 1;
+		structField := structType.Field(i)
+		if structField.Name == fieldCfg.targetField || strings.EqualFold(structField.Name, fieldCfg.targetField) {goCover_3ffe0e214acd__67[27] = 1;
+			targetField := structValue.Field(i)
+			if targetField.CanSet() && targetField.Kind() == reflect.String {goCover_3ffe0e214acd__67[28] = 1;
+				targetField.SetString(translatedValue)
+				break
+			}
+		}
+	}
+
+	goCover_3ffe0e214acd__67[11] = 1;return nil
+}

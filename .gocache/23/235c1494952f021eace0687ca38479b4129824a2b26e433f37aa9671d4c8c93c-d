@@ -1,0 +1,94 @@
+//line /Users/mouxiaojun/project/golang-dependencies/dict_trans/dict_table.go:1:1
+package dict
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+)
+
+// DictTableTranslator 字典表翻译器接口（单表：dict_type / dict_key / dict_value）。
+// 可选实现 DictTableContextTranslator（ctx）、DictTableBatchTranslator（批量）、DictTableLoader（预加载）。
+type DictTableTranslator interface {
+	// QueryDict 查询字典表
+	// dictType: 字典类型, dictKey: 字典键
+	QueryDict(dictType, dictKey string) (string, error)
+}
+
+// DictTableTranslatorFunc 字典表翻译器函数类型
+type DictTableTranslatorFunc func(dictType, dictKey string) (string, error)
+
+// QueryDict 实现 DictTableTranslator 接口
+func (f DictTableTranslatorFunc) QueryDict(dictType, dictKey string) (string, error) {goCover_3ffe0e214acd__68[0] = 1 ; goCover_3ffe0e214acd__68[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__68[2] = 68 ; goCover_3ffe0e214acd__68[3] = 1;
+	return f(dictType, dictKey)
+}
+
+// CreateDictTableTranslatorFromDB 从数据库创建字典表翻译器（默认表结构）
+func CreateDictTableTranslatorFromDB(db *sql.DB, tableName string) DictTableTranslator {goCover_3ffe0e214acd__69[0] = 1 ; goCover_3ffe0e214acd__69[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__69[2] = 69 ; goCover_3ffe0e214acd__69[3] = 1;
+	return CreateDictTableTranslatorFromDBWithConfig(db, DefaultTableConfig(tableName))
+}
+
+// CreateDictTableTranslatorFromDBWithConfig 从数据库创建字典表翻译器（自定义表结构）。
+// 返回值同时实现 DictTableContextTranslator / DictTableBatchTranslator / DictTableLoader。
+func CreateDictTableTranslatorFromDBWithConfig(db *sql.DB, config *TableConfig) DictTableTranslator {goCover_3ffe0e214acd__70[0] = 3 ; goCover_3ffe0e214acd__70[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__70[2] = 70 ; goCover_3ffe0e214acd__70[3] = 1;
+	if config == nil {goCover_3ffe0e214acd__70[5] = 1;
+		config = DefaultTableConfig("sys_dict")
+	}
+	goCover_3ffe0e214acd__70[4] = 1;return &sqlDictTable{db: db, cfg: config}
+}
+
+// sqlDictTable 基于 database/sql 的单表字典后端
+type sqlDictTable struct {
+	db  *sql.DB
+	cfg *TableConfig
+}
+
+func (t *sqlDictTable) QueryDict(dictType, dictKey string) (string, error) {goCover_3ffe0e214acd__71[0] = 1 ; goCover_3ffe0e214acd__71[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__71[2] = 71 ; goCover_3ffe0e214acd__71[3] = 1;
+	return t.QueryDictContext(context.Background(), dictType, dictKey)
+}
+
+func (t *sqlDictTable) QueryDictContext(ctx context.Context, dictType, dictKey string) (string, error) {goCover_3ffe0e214acd__72[0] = 5 ; goCover_3ffe0e214acd__72[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__72[2] = 72 ; goCover_3ffe0e214acd__72[3] = 1;
+	query, args := t.cfg.BuildQueryWithKey(dictType, dictKey)
+	var result string
+	if err := t.db.QueryRowContext(ctx, query, args...).Scan(&result); err != nil {goCover_3ffe0e214acd__72[5] = 1;
+		if err == sql.ErrNoRows {goCover_3ffe0e214acd__72[7] = 1;
+			return "", nil // 未找到记录
+		}
+		goCover_3ffe0e214acd__72[6] = 1;return "", fmt.Errorf("查询字典表失败: %w", err)
+	}
+	goCover_3ffe0e214acd__72[4] = 1;return result, nil
+}
+
+func (t *sqlDictTable) QueryDictBatch(ctx context.Context, dictType string, dictKeys []string) (map[string]string, error) {goCover_3ffe0e214acd__73[0] = 3 ; goCover_3ffe0e214acd__73[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__73[2] = 73 ; goCover_3ffe0e214acd__73[3] = 1;
+	if len(dictKeys) == 0 {goCover_3ffe0e214acd__73[5] = 1;
+		return map[string]string{}, nil
+	}
+	goCover_3ffe0e214acd__73[4] = 1;query, args := t.cfg.BuildQueryIn(dictType, dictKeys)
+	return scanKeyValues(ctx, t.db, query, args, "查询字典表失败")
+}
+
+func (t *sqlDictTable) LoadDict(ctx context.Context, dictType string) (map[string]string, error) {goCover_3ffe0e214acd__74[0] = 1 ; goCover_3ffe0e214acd__74[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__74[2] = 74 ; goCover_3ffe0e214acd__74[3] = 1;
+	query, args := t.cfg.BuildQueryAll(dictType)
+	return scanKeyValues(ctx, t.db, query, args, "预加载字典表失败")
+}
+
+// scanKeyValues 执行 SELECT key, value ... 并装成 map
+func scanKeyValues(ctx context.Context, db *sql.DB, query string, args []any, errPrefix string) (map[string]string, error) {goCover_3ffe0e214acd__75[0] = 9 ; goCover_3ffe0e214acd__75[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__75[2] = 75 ; goCover_3ffe0e214acd__75[3] = 1;
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {goCover_3ffe0e214acd__75[7] = 1;
+		return nil, fmt.Errorf("%s: %w", errPrefix, err)
+	}
+	goCover_3ffe0e214acd__75[4] = 1;defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {goCover_3ffe0e214acd__75[8] = 1;
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {goCover_3ffe0e214acd__75[10] = 1;
+			return nil, fmt.Errorf("%s: %w", errPrefix, err)
+		}
+		goCover_3ffe0e214acd__75[9] = 1;out[k] = v
+	}
+	goCover_3ffe0e214acd__75[5] = 1;if err := rows.Err(); err != nil {goCover_3ffe0e214acd__75[11] = 1;
+		return nil, fmt.Errorf("%s: %w", errPrefix, err)
+	}
+	goCover_3ffe0e214acd__75[6] = 1;return out, nil
+}

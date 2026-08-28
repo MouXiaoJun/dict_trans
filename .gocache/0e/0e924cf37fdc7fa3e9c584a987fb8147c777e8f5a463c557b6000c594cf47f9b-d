@@ -1,0 +1,90 @@
+//line /Users/mouxiaojun/project/golang-dependencies/dict_trans/cache_memory.go:1:1
+package dict
+
+import (
+	"sync"
+	"time"
+)
+
+// memoryCache 内存缓存实现
+type memoryCache struct {
+	data       map[string]cacheItem
+	mutex      sync.RWMutex
+	maxEntries int
+}
+
+type cacheItem struct {
+	value     string
+	expiresAt *time.Time
+}
+
+// NewMemoryCache 创建内存缓存
+func NewMemoryCache(maxEntries int) Cache {goCover_3ffe0e214acd__28[0] = 1 ; goCover_3ffe0e214acd__28[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__28[2] = 28 ; goCover_3ffe0e214acd__28[3] = 1;
+	return &memoryCache{
+		data:       make(map[string]cacheItem),
+		maxEntries: maxEntries,
+	}
+}
+
+func (c *memoryCache) Get(key string) (string, bool) {goCover_3ffe0e214acd__29[0] = 7 ; goCover_3ffe0e214acd__29[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__29[2] = 29 ; goCover_3ffe0e214acd__29[3] = 1;
+	c.mutex.RLock()
+	item, ok := c.data[key]
+	c.mutex.RUnlock()
+	if !ok {goCover_3ffe0e214acd__29[6] = 1;
+		return "", false
+	}
+
+	// 检查是否过期
+	goCover_3ffe0e214acd__29[4] = 1;if item.expiresAt != nil && time.Now().After(*item.expiresAt) {goCover_3ffe0e214acd__29[7] = 1;
+		// 同步删除过期项：升级为写锁后双重检查，避免误删并发 Set 写入的新值
+		c.mutex.Lock()
+		if cur, ok := c.data[key]; ok && cur.expiresAt != nil && time.Now().After(*cur.expiresAt) {goCover_3ffe0e214acd__29[9] = 1;
+			delete(c.data, key)
+		}
+		goCover_3ffe0e214acd__29[8] = 1;c.mutex.Unlock()
+		return "", false
+	}
+
+	goCover_3ffe0e214acd__29[5] = 1;return item.value, true
+}
+
+func (c *memoryCache) Set(key string, value string, ttl int) error {goCover_3ffe0e214acd__30[0] = 8 ; goCover_3ffe0e214acd__30[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__30[2] = 30 ; goCover_3ffe0e214acd__30[3] = 1;
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	// 检查最大条目数（maxEntries <= 0 表示不限制）
+	// ponytail: 满时随机淘汰一个，需要命中率时再换 LRU
+	goCover_3ffe0e214acd__30[4] = 1;if _, exists := c.data[key]; !exists && c.maxEntries > 0 && len(c.data) >= c.maxEntries {goCover_3ffe0e214acd__30[8] = 1;
+		for k := range c.data {goCover_3ffe0e214acd__30[9] = 1;
+			delete(c.data, k)
+			break
+		}
+	}
+
+	goCover_3ffe0e214acd__30[5] = 1;var expiresAt *time.Time
+	if ttl > 0 {goCover_3ffe0e214acd__30[10] = 1;
+		exp := time.Now().Add(time.Duration(ttl) * time.Second)
+		expiresAt = &exp
+	}
+
+	goCover_3ffe0e214acd__30[6] = 1;c.data[key] = cacheItem{
+		value:     value,
+		expiresAt: expiresAt,
+	}
+
+	goCover_3ffe0e214acd__30[7] = 1;return nil
+}
+
+func (c *memoryCache) Delete(key string) error {goCover_3ffe0e214acd__31[0] = 1 ; goCover_3ffe0e214acd__31[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__31[2] = 31 ; goCover_3ffe0e214acd__31[3] = 1;
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	delete(c.data, key)
+	return nil
+}
+
+func (c *memoryCache) Clear() error {goCover_3ffe0e214acd__32[0] = 1 ; goCover_3ffe0e214acd__32[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__32[2] = 32 ; goCover_3ffe0e214acd__32[3] = 1;
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.data = make(map[string]cacheItem)
+	return nil
+}

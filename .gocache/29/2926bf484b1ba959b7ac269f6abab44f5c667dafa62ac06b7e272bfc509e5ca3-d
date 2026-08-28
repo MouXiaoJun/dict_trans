@@ -1,0 +1,13 @@
+//line /Users/mouxiaojun/project/golang-dependencies/dict_trans/generic.go:1:1
+package dict
+
+// TranslateOf 是 Translate 的泛型入口：编译期保证传入的是 *T，
+// 传错类型不再是运行时的 ErrNotPointer。反射核心不变（struct tag 只能运行时读）。
+func TranslateOf[T any](v *T) error {goCover_3ffe0e214acd__102[0] = 1 ; goCover_3ffe0e214acd__102[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__102[2] = 102 ; goCover_3ffe0e214acd__102[3] = 1;
+	return Translate(v)
+}
+
+// BatchTranslateOf 是 BatchTranslate 的泛型入口：编译期保证传入的是 []*T。
+func BatchTranslateOf[T any](items []*T, parallel bool) error {goCover_3ffe0e214acd__103[0] = 1 ; goCover_3ffe0e214acd__103[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__103[2] = 103 ; goCover_3ffe0e214acd__103[3] = 1;
+	return BatchTranslate(&items, parallel)
+}

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-02-XX
+
+### Added
+- 数据脱敏：struct tag 驱动（`mask:"phone"` / `mask:"3,4"` / `mask:"-"` / `mask:"*"`）
+- 内置脱敏格式：phone / idcard / bankcard / email / name / address / password / 通配
+- 通用保留格式（前 n 后 m 字符，按 rune 处理，中文安全）
+- 嵌套结构体 / 结构体指针 / 结构体切片 / 顶层切片自动递归脱敏
+- 泛型入口 MaskOf；自定义格式 RegisterMaskFormat（按管理器隔离，注册后即时生效）
+- 脱敏与翻译共存：先 Translate 后 Mask，配置缓存独立
+
 ## [Unreleased]
 
 ### Added

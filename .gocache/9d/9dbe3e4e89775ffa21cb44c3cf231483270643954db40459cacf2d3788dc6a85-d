@@ -1,0 +1,332 @@
+//line /Users/mouxiaojun/project/golang-dependencies/dict_trans/mask.go:1:1
+package dict
+
+import (
+	"fmt"
+	"reflect"
+	"strconv"
+	"strings"
+)
+
+// MaskFormatter 脱敏格式：输入原文，输出脱敏后的字符串。
+type MaskFormatter func(s string) string
+
+// builtinMaskFormats 内置脱敏格式（所有管理器共享，只读）：
+// 覆盖国内业务最常见的敏感字段。所有格式按 rune 处理，中文不截断。
+var builtinMaskFormats = map[string]MaskFormatter{
+	"phone":    maskKeepBoth(3, 4), // 手机号：138****8000
+	"idcard":   maskKeepBoth(6, 4), // 身份证：110101********1234
+	"bankcard": maskKeepBoth(4, 4), // 银行卡：6222********1234
+	"address":  maskKeepBoth(6, 0), // 地址：保留前 6 个字符
+	"email":    maskEmail,          // 邮箱：a***@b.com
+	"name":     maskName,           // 姓名：张* / 张**
+	"password": maskAll,            // 密码/密钥：全部掩掉
+	"*":        maskAll,            // 通配：全部掩掉
+}
+
+// maskKeepBoth 保留前 head 与后 tail 个字符（按 rune 计），中间掩掉；
+// 字符串太短（不足首尾之和）时全部掩掉。
+func maskKeepBoth(head, tail int) MaskFormatter {goCover_3ffe0e214acd__104[0] = 4 ; goCover_3ffe0e214acd__104[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__104[2] = 104 ; goCover_3ffe0e214acd__104[3] = 1;
+	return func(s string) string {goCover_3ffe0e214acd__104[4] = 1;
+		r := []rune(s)
+		if len(r) <= head+tail {goCover_3ffe0e214acd__104[6] = 1;
+			return strings.Repeat("*", len(r))
+		}
+		goCover_3ffe0e214acd__104[5] = 1;return string(r[:head]) + strings.Repeat("*", len(r)-head-tail) + string(r[len(r)-tail:])
+	}
+}
+
+// maskEmail 本地部分保留首字符，域名保留：zhangsan@example.com → z*******@example.com。
+func maskEmail(s string) string {goCover_3ffe0e214acd__105[0] = 5 ; goCover_3ffe0e214acd__105[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__105[2] = 105 ; goCover_3ffe0e214acd__105[3] = 1;
+	at := strings.IndexByte(s, '@')
+	if at < 0 {goCover_3ffe0e214acd__105[6] = 1;
+		return maskAll(s)
+	}
+	goCover_3ffe0e214acd__105[4] = 1;local, domain := s[:at], s[at:]
+	r := []rune(local)
+	if len(r) <= 1 {goCover_3ffe0e214acd__105[7] = 1;
+		return "*" + domain
+	}
+	goCover_3ffe0e214acd__105[5] = 1;return string(r[:1]) + strings.Repeat("*", len(r)-1) + domain
+}
+
+// maskName 保留首字符，其余掩掉：张三 → 张*，张三四 → 张**。
+func maskName(s string) string {goCover_3ffe0e214acd__106[0] = 3 ; goCover_3ffe0e214acd__106[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__106[2] = 106 ; goCover_3ffe0e214acd__106[3] = 1;
+	r := []rune(s)
+	if len(r) <= 1 {goCover_3ffe0e214acd__106[5] = 1;
+		return s
+	}
+	goCover_3ffe0e214acd__106[4] = 1;return string(r[:1]) + strings.Repeat("*", len(r)-1)
+}
+
+// maskAll 全部掩掉（保留原长度）。
+func maskAll(s string) string {goCover_3ffe0e214acd__107[0] = 1 ; goCover_3ffe0e214acd__107[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__107[2] = 107 ; goCover_3ffe0e214acd__107[3] = 1;
+	return strings.Repeat("*", len([]rune(s)))
+}
+
+// maskErr 构建期发现的脱敏配置错误。
+type maskErr struct{ field, name string }
+
+// maskFieldConfig 单字段脱敏配置（getMaskConfig 时一次算好，脱敏热路径零解析）。
+type maskFieldConfig struct {
+	fieldIndex int
+	format     MaskFormatter // 非 nil 表示该字段需脱敏；nil 表示仅嵌套递归
+	nested     nestedKind
+}
+
+// maskConfig 按类型缓存的脱敏配置。
+type maskConfig struct {
+	fields []maskFieldConfig
+	errs   []maskErr
+}
+
+// RegisterMaskFormat 注册自定义脱敏格式，name 即 struct tag 里的格式名。
+// 注册后已脱敏过的类型也会用上新格式（脱敏配置缓存清空重建）。
+// 示例：
+//
+//	RegisterMaskFormat("carplate", func(s string) string {
+//	    r := []rune(s)
+//	    if len(r) < 4 { return s }
+//	    return string(r[:2]) + "***" + string(r[len(r)-2:])
+//	})
+//
+//	type Car struct{ Plate string `mask:"carplate"` }
+func RegisterMaskFormat(name string, fn MaskFormatter) {goCover_3ffe0e214acd__108[0] = 1 ; goCover_3ffe0e214acd__108[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__108[2] = 108 ; goCover_3ffe0e214acd__108[3] = 1;
+	defaultManager.RegisterMaskFormat(name, fn)
+}
+
+// RegisterMaskFormat 注册自定义脱敏格式（实例方法，按管理器隔离，并发安全）。
+func (dm *DictManager) RegisterMaskFormat(name string, fn MaskFormatter) {goCover_3ffe0e214acd__109[0] = 5 ; goCover_3ffe0e214acd__109[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__109[2] = 109 ; goCover_3ffe0e214acd__109[3] = 1;
+	if name == "" || fn == nil {goCover_3ffe0e214acd__109[6] = 1;
+		return
+	}
+	goCover_3ffe0e214acd__109[4] = 1;dm.updateReg(func(r *registry) {goCover_3ffe0e214acd__109[7] = 1; r.formats[name] = fn })
+
+	goCover_3ffe0e214acd__109[5] = 1;dm.maskConfigMutex.Lock()
+	dm.maskConfigCache = make(map[reflect.Type]*maskConfig)
+	dm.maskConfigMutex.Unlock()
+}
+
+// maskFormat 查脱敏格式：自定义优先，回退内置。
+func (dm *DictManager) maskFormat(name string) MaskFormatter {goCover_3ffe0e214acd__110[0] = 3 ; goCover_3ffe0e214acd__110[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__110[2] = 110 ; goCover_3ffe0e214acd__110[3] = 1;
+	if fn := dm.loadReg().formats[name]; fn != nil {goCover_3ffe0e214acd__110[5] = 1;
+		return fn
+	}
+	goCover_3ffe0e214acd__110[4] = 1;return builtinMaskFormats[name]
+}
+
+// Mask 就地脱敏结构体或结构体切片（修改 v 指向的字段值）。
+// v 必须是结构体指针或结构体切片指针。配置错误（未注册格式）返回错误。
+//
+// struct tag 语法：
+//   - `mask:"phone"`：使用内置/注册格式
+//   - `mask:"3,4"`：通用格式，保留前 3 与后 4 个字符，中间掩掉
+//   - `mask:"-"`：忽略该字段
+//   - `mask:"*"`：全部掩掉
+//
+// 嵌套结构体、结构体指针、结构体切片自动递归脱敏；非字符串字段跳过。
+func Mask(v any) error {goCover_3ffe0e214acd__111[0] = 1 ; goCover_3ffe0e214acd__111[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__111[2] = 111 ; goCover_3ffe0e214acd__111[3] = 1;
+	return defaultManager.Mask(v)
+}
+
+// MaskOf 是 Mask 的泛型入口：编译期保证 *T。
+func MaskOf[T any](v *T) error {goCover_3ffe0e214acd__112[0] = 1 ; goCover_3ffe0e214acd__112[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__112[2] = 112 ; goCover_3ffe0e214acd__112[3] = 1;
+	return Mask(v)
+}
+
+// Mask 就地脱敏结构体或结构体切片（实例方法）。
+func (dm *DictManager) Mask(v any) error {goCover_3ffe0e214acd__113[0] = 15 ; goCover_3ffe0e214acd__113[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__113[2] = 113 ; goCover_3ffe0e214acd__113[3] = 1;
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Ptr || rv.IsNil() {goCover_3ffe0e214acd__113[7] = 1;
+		return ErrNotPointer
+	}
+	goCover_3ffe0e214acd__113[4] = 1;elem := rv.Elem()
+	var errs []string
+	switch elem.Kind() {
+	case reflect.Struct:goCover_3ffe0e214acd__113[8] = 1;
+		dm.maskStruct(elem, "", &errs)
+	case reflect.Slice, reflect.Array:goCover_3ffe0e214acd__113[9] = 1;
+		for i := 0; i < elem.Len(); i++ {goCover_3ffe0e214acd__113[11] = 1;
+			ev := elem.Index(i)
+			for ev.Kind() == reflect.Ptr || ev.Kind() == reflect.Interface {goCover_3ffe0e214acd__113[13] = 1;
+				if ev.IsNil() {goCover_3ffe0e214acd__113[15] = 1;
+					ev = reflect.Value{}
+					break
+				}
+				goCover_3ffe0e214acd__113[14] = 1;ev = ev.Elem()
+			}
+			goCover_3ffe0e214acd__113[12] = 1;if ev.IsValid() && ev.Kind() == reflect.Struct {goCover_3ffe0e214acd__113[16] = 1;
+				dm.maskStruct(ev, fmt.Sprintf("[%d].", i), &errs)
+			}
+		}
+	default:goCover_3ffe0e214acd__113[10] = 1;
+		return ErrNotStruct
+	}
+	goCover_3ffe0e214acd__113[5] = 1;if len(errs) > 0 {goCover_3ffe0e214acd__113[17] = 1;
+		return fmt.Errorf("dict-trans: mask: %s", strings.Join(errs, "; "))
+	}
+	goCover_3ffe0e214acd__113[6] = 1;return nil
+}
+
+// maskStruct 递归脱敏结构体，path 用于错误消息。
+func (dm *DictManager) maskStruct(rv reflect.Value, path string, errs *[]string) {goCover_3ffe0e214acd__114[0] = 26 ; goCover_3ffe0e214acd__114[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__114[2] = 114 ; goCover_3ffe0e214acd__114[3] = 1;
+	cfg := dm.getMaskConfig(rv.Type())
+	for _, me := range cfg.errs {goCover_3ffe0e214acd__114[5] = 1;
+		*errs = append(*errs, fmt.Sprintf("字段 %s: mask 格式 %q 未注册", me.field, me.name))
+	}
+	goCover_3ffe0e214acd__114[4] = 1;for _, fc := range cfg.fields {goCover_3ffe0e214acd__114[6] = 1;
+		fv := rv.Field(fc.fieldIndex)
+		fieldName := path + rv.Type().Field(fc.fieldIndex).Name
+
+		// 字符串字段：应用格式；非字符串字段带 tag 时忽略格式，仅当嵌套时继续递归。
+		goCover_3ffe0e214acd__114[7] = 1;if fc.format != nil {goCover_3ffe0e214acd__114[10] = 1;
+			if fv.Kind() == reflect.String {goCover_3ffe0e214acd__114[11] = 1;
+				fv.SetString(fc.format(fv.String()))
+				continue
+			}
+		}
+		goCover_3ffe0e214acd__114[8] = 1;if fc.nested == nestedNone || !fv.IsValid() {goCover_3ffe0e214acd__114[12] = 1;
+			continue
+		}
+		goCover_3ffe0e214acd__114[9] = 1;switch fc.nested {
+		case nestedStruct:goCover_3ffe0e214acd__114[13] = 1;
+			dm.maskStruct(fv, fieldName+".", errs)
+		case nestedPtr:goCover_3ffe0e214acd__114[14] = 1;
+			if fv.IsNil() {goCover_3ffe0e214acd__114[18] = 1;
+				continue
+			}
+			goCover_3ffe0e214acd__114[15] = 1;elem := fv.Elem()
+			for elem.Kind() == reflect.Ptr || elem.Kind() == reflect.Interface {goCover_3ffe0e214acd__114[19] = 1;
+				if elem.IsNil() {goCover_3ffe0e214acd__114[21] = 1;
+					elem = reflect.Value{}
+					break
+				}
+				goCover_3ffe0e214acd__114[20] = 1;elem = elem.Elem()
+			}
+			goCover_3ffe0e214acd__114[16] = 1;if elem.IsValid() && elem.Kind() == reflect.Struct {goCover_3ffe0e214acd__114[22] = 1;
+				dm.maskStruct(elem, fieldName+".", errs)
+			}
+		case nestedSlice:goCover_3ffe0e214acd__114[17] = 1;
+			for i := 0; i < fv.Len(); i++ {goCover_3ffe0e214acd__114[23] = 1;
+				ev := fv.Index(i)
+				for ev.Kind() == reflect.Ptr || ev.Kind() == reflect.Interface {goCover_3ffe0e214acd__114[25] = 1;
+					if ev.IsNil() {goCover_3ffe0e214acd__114[27] = 1;
+						ev = reflect.Value{}
+						break
+					}
+					goCover_3ffe0e214acd__114[26] = 1;ev = ev.Elem()
+				}
+				goCover_3ffe0e214acd__114[24] = 1;if ev.IsValid() && ev.Kind() == reflect.Struct {goCover_3ffe0e214acd__114[28] = 1;
+					dm.maskStruct(ev, fmt.Sprintf("%s[%d].", fieldName, i), errs)
+				}
+			}
+		}
+	}
+}
+
+// getMaskConfig 获取类型的脱敏配置（构建并缓存）。
+func (dm *DictManager) getMaskConfig(t reflect.Type) *maskConfig {goCover_3ffe0e214acd__115[0] = 5 ; goCover_3ffe0e214acd__115[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__115[2] = 115 ; goCover_3ffe0e214acd__115[3] = 1;
+	dm.maskConfigMutex.RLock()
+	cfg := dm.maskConfigCache[t]
+	dm.maskConfigMutex.RUnlock()
+	if cfg != nil {goCover_3ffe0e214acd__115[6] = 1;
+		return cfg
+	}
+	goCover_3ffe0e214acd__115[4] = 1;dm.maskConfigMutex.Lock()
+	defer dm.maskConfigMutex.Unlock()
+	if cfg = dm.maskConfigCache[t]; cfg != nil {goCover_3ffe0e214acd__115[7] = 1;
+		return cfg
+	}
+	goCover_3ffe0e214acd__115[5] = 1;cfg = dm.buildMaskConfig(t)
+	dm.maskConfigCache[t] = cfg
+	return cfg
+}
+
+// buildMaskConfig 构建某类型的脱敏配置：只保留有 mask tag 或需递归的字段。
+func (dm *DictManager) buildMaskConfig(t reflect.Type) *maskConfig {goCover_3ffe0e214acd__116[0] = 18 ; goCover_3ffe0e214acd__116[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__116[2] = 116 ; goCover_3ffe0e214acd__116[3] = 1;
+	cfg := &maskConfig{}
+	for i := 0; i < t.NumField(); i++ {goCover_3ffe0e214acd__116[5] = 1;
+		sf := t.Field(i)
+		if sf.PkgPath != "" {goCover_3ffe0e214acd__116[10] = 1;
+			continue // 未导出字段跳过
+		}
+		goCover_3ffe0e214acd__116[6] = 1;tag := sf.Tag.Get("mask")
+		fc := maskFieldConfig{fieldIndex: i, nested: nestedKindOf(sf.Type)}
+		if tag == "" {goCover_3ffe0e214acd__116[11] = 1;
+			if fc.nested != nestedNone {goCover_3ffe0e214acd__116[13] = 1;
+				cfg.fields = append(cfg.fields, fc)
+			}
+			goCover_3ffe0e214acd__116[12] = 1;continue
+		}
+		goCover_3ffe0e214acd__116[7] = 1;if tag == "-" {goCover_3ffe0e214acd__116[14] = 1;
+			continue
+		}
+		// 通用格式：mask:"3,4"（保留前 3 后 4）
+		goCover_3ffe0e214acd__116[8] = 1;if strings.Contains(tag, ",") {goCover_3ffe0e214acd__116[15] = 1;
+			head, tail, ok := parseMaskKeep(tag)
+			if !ok {goCover_3ffe0e214acd__116[17] = 1;
+				cfg.errs = append(cfg.errs, maskErr{sf.Name, tag})
+				continue
+			}
+			goCover_3ffe0e214acd__116[16] = 1;fc.format = maskKeepBoth(head, tail)
+		} else{ goCover_3ffe0e214acd__116[18] = 1;{
+			fn := dm.maskFormat(tag)
+			if fn == nil {goCover_3ffe0e214acd__116[20] = 1;
+				cfg.errs = append(cfg.errs, maskErr{sf.Name, tag})
+				continue
+			}
+			goCover_3ffe0e214acd__116[19] = 1;fc.format = fn
+		}}
+		goCover_3ffe0e214acd__116[9] = 1;cfg.fields = append(cfg.fields, fc)
+	}
+	goCover_3ffe0e214acd__116[4] = 1;return cfg
+}
+
+// parseMaskKeep 解析 "3,4" 形式的通用保留参数。
+func parseMaskKeep(tag string) (head, tail int, ok bool) {goCover_3ffe0e214acd__117[0] = 5 ; goCover_3ffe0e214acd__117[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__117[2] = 117 ; goCover_3ffe0e214acd__117[3] = 1;
+	parts := strings.Split(tag, ",")
+	if len(parts) != 2 {goCover_3ffe0e214acd__117[6] = 1;
+		return 0, 0, false
+	}
+	goCover_3ffe0e214acd__117[4] = 1;h, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+	ta, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err1 != nil || err2 != nil || h < 0 || ta < 0 {goCover_3ffe0e214acd__117[7] = 1;
+		return 0, 0, false
+	}
+	goCover_3ffe0e214acd__117[5] = 1;return h, ta, true
+}
+
+// nestedKindOf 判断类型的嵌套方式（结构体 / 结构体指针 / 结构体切片）。
+func nestedKindOf(t reflect.Type) nestedKind {goCover_3ffe0e214acd__118[0] = 19 ; goCover_3ffe0e214acd__118[1] = goCover_3ffe0e214acd_P ; goCover_3ffe0e214acd__118[2] = 118 ; goCover_3ffe0e214acd__118[3] = 1;
+	if t.Kind() == reflect.Struct {goCover_3ffe0e214acd__118[7] = 1;
+		return nestedStruct
+	}
+	goCover_3ffe0e214acd__118[4] = 1;if t.Kind() == reflect.Ptr || t.Kind() == reflect.Interface {goCover_3ffe0e214acd__118[8] = 1;
+		if t.Kind() == reflect.Interface && t.NumMethod() > 0 {goCover_3ffe0e214acd__118[11] = 1;
+			return nestedNone // 非空接口无法确定具体类型，不递归
+		}
+		goCover_3ffe0e214acd__118[9] = 1;et := t.Elem()
+		for et.Kind() == reflect.Ptr || et.Kind() == reflect.Interface {goCover_3ffe0e214acd__118[12] = 1;
+			if et.Kind() == reflect.Interface && et.NumMethod() > 0 {goCover_3ffe0e214acd__118[14] = 1;
+				return nestedNone
+			}
+			goCover_3ffe0e214acd__118[13] = 1;et = et.Elem()
+		}
+		goCover_3ffe0e214acd__118[10] = 1;if et.Kind() == reflect.Struct {goCover_3ffe0e214acd__118[15] = 1;
+			return nestedPtr
+		}
+	}
+	goCover_3ffe0e214acd__118[5] = 1;if t.Kind() == reflect.Slice || t.Kind() == reflect.Array {goCover_3ffe0e214acd__118[16] = 1;
+		et := t.Elem()
+		for et.Kind() == reflect.Ptr || et.Kind() == reflect.Interface {goCover_3ffe0e214acd__118[18] = 1;
+			if et.Kind() == reflect.Interface && et.NumMethod() > 0 {goCover_3ffe0e214acd__118[20] = 1;
+				return nestedNone
+			}
+			goCover_3ffe0e214acd__118[19] = 1;et = et.Elem()
+		}
+		goCover_3ffe0e214acd__118[17] = 1;if et.Kind() == reflect.Struct {goCover_3ffe0e214acd__118[21] = 1;
+			return nestedSlice
+		}
+	}
+	goCover_3ffe0e214acd__118[6] = 1;return nestedNone
+}

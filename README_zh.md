@@ -23,6 +23,7 @@
 - ✅ **双表字典翻译**：从字典类型表+字典数据表读取数据翻译（双表结构）
 - ✅ **枚举转换**：支持枚举类型的自动转换
 - ✅ **数据库翻译**：支持从数据库自动查表翻译（类似 Easy Trans）
+- ✅ **数据脱敏**：struct tag 驱动，内置手机号/身份证/银行卡/邮箱等格式（与翻译共存）
 - ✅ **嵌套翻译**：支持嵌套结构体的自动翻译
 - ✅ **自定义翻译器**：支持自定义翻译逻辑（可扩展支持 Redis、本地缓存等）
 - ✅ **包装类型支持**：支持 Page、Result 等包装类型的自动解包
@@ -363,6 +364,48 @@ page := &Page{Data: []Item{{Status: "1"}}}
 dict.Translate(page)
 ```
 
+### 数据脱敏
+
+通过 `mask` tag 就地脱敏字符串字段，与翻译可以共存（先 `Translate` 后 `Mask`）。
+
+```go
+type User struct {
+    Name     string `mask:"name"`     // 姓名：张三 → 张*
+    Phone    string `mask:"phone"`    // 手机号：13800138000 → 138****8000
+    IDCard   string `mask:"idcard"`   // 身份证：110101********1234
+    Email    string `mask:"email"`    // 邮箱：zhangsan@example.com → z*******@example.com
+    Password string `mask:"password"` // 密码：secret → ******
+    BankCard string `mask:"4,4"`      // 通用：保留前 4 后 4
+    Note     string                   // 无 tag 不脱敏
+}
+
+user := User{Name: "张三", Phone: "13800138000", Password: "secret"}
+dict.Mask(&user)
+// user.Phone = "138****8000"，user.Name = "张*"
+
+// 顶层切片批量脱敏
+users := []User{{Name: "李四"}, {Name: "王五"}}
+dict.Mask(&users)
+
+// 嵌套结构体 / 结构体指针 / 结构体切片自动递归
+// 泛型入口：dict.MaskOf(&user)
+```
+
+**内置格式：**
+
+| 格式 | 规则 | 示例 |
+| --- | --- | --- |
+| `phone` | 保留前 3 后 4 | `13800138000` → `138****8000` |
+| `idcard` | 保留前 6 后 4 | `110101199003071234` → `110101********1234` |
+| `bankcard` | 保留前 4 后 4 | `6222020200112233` → `6222********2233` |
+| `email` | 本地部分保留首字符 | `zhangsan@example.com` → `z*******@example.com` |
+| `name` | 保留首字符 | `张三` → `张*`，`张三四` → `张**` |
+| `address` | 保留前 6 个字符 | — |
+| `password` / `*` | 全部掩掉 | `secret123` → `*********` |
+| `3,4`（通用） | 保留前 n 后 m 字符 | `6222020200112233` → `6222********2233` |
+
+**自定义格式：** `mask:"-"` 忽略字段；`RegisterMaskFormat` 注册自定义格式（注册后即时生效）。
+
 ### 批量并行翻译
 
 ```go
@@ -460,6 +503,7 @@ CI 在每个 PR 的 job summary 里贴 `benchstat` 对比（base vs head）；`g
 - `db:"table:key:value"` 或 `db:"table=table,key=key,value=value"` - 数据库翻译（类似 Easy Trans）
 - `translate:"翻译器名"` - 指定使用的自定义翻译器
 - `dictField:"字段名"` - 指定翻译结果存储的字段名（大小写不敏感）
+- `mask:"格式名"` - 指定脱敏格式（如 `phone` / `idcard` / `3,4` / `-` / `*`）
 
 ## 标签优先级
 
