@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-08-30
+
+### Fixed / Changed
+
+- Apply cache TTL, capacity and enable switches; isolate backend generations and use unambiguous cache keys.
+- Keep batch missing/empty results only for the current call to avoid repeated single-key lookups; fix masking edge cases.
+- Compatibility: custom-cache keys become cold and are private to a registration. Use positive TTL or external eviction to reclaim old namespaces.
+- Align LICENSE and current documentation with MIT, as confirmed by the maintainer; preserve existing copyright notices.
+
 ## [1.3.0] - 2026-02-XX
 
 ### Added
@@ -45,4 +54,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 基础字典翻译功能
 - 数据库翻译功能
 - 框架模式支持
-

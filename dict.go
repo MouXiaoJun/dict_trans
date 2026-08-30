@@ -105,12 +105,13 @@ func NewDictManager() *DictManager {
 //     只有经指针到达的结构体才需要记录（值类型嵌套不可能成环），map 惰性分配，无指针的常见场景零开销。
 //     以 (地址, 类型) 为键：外层结构体与其第一个字段地址相同，只用地址会误判。
 type walk struct {
-	ctx     context.Context
-	collect map[*lookupTranslator][]string
-	mu      *sync.Mutex // 并行批量时多个 worker 共享一份 walk，用它保护 visited 集；顺序翻译为 nil
-	small   [4]visitKey // 前几个指针目标放栈上，常见 DTO 不碰堆
-	n       int
-	m       map[visitKey]struct{} // 溢出后才分配
+	ctx        context.Context
+	collect    map[*lookupTranslator][]string
+	prefetched map[lookupResultKey]string // 预取结束后只读，可供并行回填共享
+	mu         *sync.Mutex                // 并行批量时多个 worker 共享一份 walk，用它保护 visited 集；顺序翻译为 nil
+	small      [4]visitKey                // 前几个指针目标放栈上，常见 DTO 不碰堆
+	n          int
+	m          map[visitKey]struct{} // 溢出后才分配
 }
 
 type visitKey struct {
@@ -238,6 +239,7 @@ type translateOpts struct {
 	ctx        context.Context
 	parallel   bool
 	noPrefetch bool
+	prefetched map[lookupResultKey]string
 }
 
 // WithContext 传入 ctx：进每个结构体前检查取消；实现了 ContextTranslator 的翻译器（含内置 DB 类）会收到它
@@ -296,16 +298,16 @@ func (dm *DictManager) translateSliceOpts(sliceValue reflect.Value, o *translate
 		return err
 	}
 	if o.parallel && sliceValue.Len() >= 10 {
-		return dm.batchTranslateParallel(sliceValue, o.ctx)
+		return dm.batchTranslateParallel(sliceValue, o.ctx, o.prefetched)
 	}
-	return dm.translateSlice(sliceValue, o.ctx)
+	return dm.translateSlice(sliceValue, o.ctx, o.prefetched)
 }
 
 // translateSlice 翻译顶层切片：整个切片共享一份 visited。
 // 顶层元素本身不记 visited（平铺 []*Row 零开销），只记从元素内部经指针到达的目标，
 // 所以父子链 / 树形数据里被多个元素共享的子图只走一次，总体 O(n) 而不是 O(n²)。
-func (dm *DictManager) translateSlice(sliceValue reflect.Value, ctx context.Context) error {
-	w := &walk{ctx: ctx}
+func (dm *DictManager) translateSlice(sliceValue reflect.Value, ctx context.Context, prefetched map[lookupResultKey]string) error {
+	w := &walk{ctx: ctx, prefetched: prefetched}
 	for i := 0; i < sliceValue.Len(); i++ {
 		elem, ok := sliceElemStruct(sliceValue.Index(i))
 		if !ok {
@@ -347,8 +349,9 @@ func (dm *DictManager) prefetchSlice(sliceValue reflect.Value, o *translateOpts)
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	o.prefetched = make(map[lookupResultKey]string)
 	for lt, keys := range w.collect {
-		if err := lt.mgr.prefetch(ctx, lt.group, lt.parts, keys); err != nil {
+		if err := lt.mgr.prefetch(ctx, lt.group, lt.parts, keys, o.prefetched); err != nil {
 			return err
 		}
 	}
@@ -686,7 +689,13 @@ func (dm *DictManager) translateFieldWithTranslator(field reflect.Value, fieldCf
 	// 调用翻译器：带 ctx 且翻译器支持时走 ContextTranslator
 	var translatedValue string
 	var err error
-	if ct, ok := fieldCfg.translator.(ContextTranslator); ok && w.ctx != nil {
+	if lt, ok := fieldCfg.translator.(*lookupTranslator); ok && w.prefetched != nil {
+		ctx := w.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		translatedValue, err = lt.mgr.lookup(ctx, lt.group, lt.parts, fmt.Sprintf("%v", sourceValue), w.prefetched)
+	} else if ct, ok := fieldCfg.translator.(ContextTranslator); ok && w.ctx != nil {
 		translatedValue, err = ct.TranslateContext(w.ctx, sourceValue, fieldCfg.fieldName, fieldCfg.translatorTag)
 	} else {
 		translatedValue, err = fieldCfg.translator.Translate(sourceValue, fieldCfg.fieldName, fieldCfg.translatorTag)

@@ -2,7 +2,10 @@ package dict
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,57 +48,59 @@ type DictTableLoader interface {
 }
 
 // ---------------------------------------------------------------------------
-// 结果缓存：Decorator——包在 DB 后端外面。默认进程内 map；Config.Cache.Enabled 且设置了 CustomCache（如 Redis）时走它，
-// TTL 取 Config.Cache.TTL。EnableXCache(false) 相当于摘掉这层装饰器。
+// 结果缓存：默认复用 MemoryCache，也可使用 CustomCache。
+// 全局 Cache.Enabled 和 EnableXCache 必须同时启用；两种存储均使用 Cache.TTL。
 // ---------------------------------------------------------------------------
 
 type resultCache struct {
-	name    string // 前缀，三类缓存共用一个 CustomCache 时不撞 key
-	enabled atomic.Bool
-	mu      sync.RWMutex
-	m       map[string]string
+	name       string // 前缀，三类缓存共用一个 CustomCache 时不撞 key
+	enabled    *atomic.Bool
+	mu         sync.Mutex
+	memory     Cache
+	maxEntries int
+	ttl        int
 }
 
-func newResultCache(name string) *resultCache {
-	c := &resultCache{name: name, m: make(map[string]string)}
-	c.enabled.Store(true)
-	return c
+func newResultCache(name string, enabled *atomic.Bool) *resultCache {
+	// 独立命名空间也隔离共享 CustomCache 中其他进程 / 注册代次的结果。
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		panic(fmt.Errorf("dict: initialize result cache namespace: %w", err))
+	}
+	return &resultCache{name: name + ":" + hex.EncodeToString(nonce[:]), enabled: enabled}
+}
+
+func (c *resultCache) storage() (Cache, int) {
+	cfg := GetConfig().Cache
+	if !c.enabled.Load() || !cfg.Enabled {
+		return nil, 0
+	}
+	if cfg.CustomCache != nil {
+		return cfg.CustomCache, cfg.TTL
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.memory == nil || c.maxEntries != cfg.MaxEntries || c.ttl != cfg.TTL {
+		c.memory = NewMemoryCache(cfg.MaxEntries)
+		c.maxEntries, c.ttl = cfg.MaxEntries, cfg.TTL
+	}
+	return c.memory, cfg.TTL
 }
 
 func (c *resultCache) get(key string) (string, bool) {
-	if !c.enabled.Load() {
-		return "", false
+	if cache, _ := c.storage(); cache != nil {
+		return cache.Get(c.name + ":" + key)
 	}
-	if cfg := GetConfig(); cfg.Cache.Enabled && cfg.Cache.CustomCache != nil {
-		return cfg.Cache.CustomCache.Get(c.name + ":" + key)
-	}
-	c.mu.RLock()
-	v, ok := c.m[key]
-	c.mu.RUnlock()
-	return v, ok
+	return "", false
 }
 
 func (c *resultCache) set(key, value string) {
-	if !c.enabled.Load() || value == "" {
+	if value == "" {
 		return
 	}
-	if cfg := GetConfig(); cfg.Cache.Enabled && cfg.Cache.CustomCache != nil {
-		_ = cfg.Cache.CustomCache.Set(c.name+":"+key, value, cfg.Cache.TTL)
-		return
+	if cache, ttl := c.storage(); cache != nil {
+		_ = cache.Set(c.name+":"+key, value, ttl)
 	}
-	c.mu.Lock()
-	c.m[key] = value
-	c.mu.Unlock()
-}
-
-// clear 清空本地缓存；配置了 CustomCache 时调用它的 Clear（由实现决定范围）
-func (c *resultCache) clear() {
-	if cfg := GetConfig(); cfg.Cache.Enabled && cfg.Cache.CustomCache != nil {
-		_ = cfg.Cache.CustomCache.Clear()
-	}
-	c.mu.Lock()
-	c.m = make(map[string]string)
-	c.mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------
@@ -104,46 +109,87 @@ func (c *resultCache) clear() {
 // ---------------------------------------------------------------------------
 
 type lookupManager struct {
-	name    string
-	backend atomic.Pointer[lookupBackend] // 用户注册的后端，写时整体替换
-	cache   *resultCache
+	name         string
+	backend      atomic.Pointer[lookupBackend] // 用户注册的后端，写时整体替换
+	cacheEnabled atomic.Bool
 }
 
 // lookupBackend 把三类后端接口统一成 one / many / load 三个能力；many / load 为 nil 表示不支持
 type lookupBackend struct {
-	one  func(ctx context.Context, parts []string, key string) (string, error)
-	many func(ctx context.Context, parts []string, keys []string) (map[string]string, error)
-	load func(ctx context.Context, parts []string) (map[string]string, error)
+	cache *resultCache // 与后端一起发布；旧请求只能写入旧代缓存
+	one   func(ctx context.Context, parts []string, key string) (string, error)
+	many  func(ctx context.Context, parts []string, keys []string) (map[string]string, error)
+	load  func(ctx context.Context, parts []string) (map[string]string, error)
 }
 
-// cacheGroup 分组的缓存键前缀；分隔符只影响缓存键，不再被反解析
-func cacheGroup(parts []string) string { return strings.Join(parts, "\x00") }
+// cacheGroup 用长度前缀编码任意分量，避免分隔符与用户数据歧义。
+func cacheGroup(parts []string) string {
+	var key strings.Builder
+	for _, part := range parts {
+		key.WriteString(strconv.Itoa(len(part)))
+		key.WriteByte(':')
+		key.WriteString(part)
+	}
+	return key.String()
+}
 
 func newLookupManager(name string) *lookupManager {
-	return &lookupManager{name: name, cache: newResultCache(name)}
+	m := &lookupManager{name: name}
+	m.cacheEnabled.Store(true)
+	return m
 }
 
-func (m *lookupManager) lookup(ctx context.Context, group string, parts []string, key string) (string, error) {
-	cacheKey := group + ":" + key
-	if v, ok := m.cache.get(cacheKey); ok {
-		return v, nil
+func (m *lookupManager) register(b *lookupBackend) {
+	b.cache = newResultCache(m.name, &m.cacheEnabled)
+	m.backend.Store(b)
+}
+
+// clear 只切换本类命名空间，不调用共享 CustomCache.Clear。
+func (m *lookupManager) clear() {
+	for {
+		old := m.backend.Load()
+		if old == nil {
+			return
+		}
+		next := *old
+		next.cache = newResultCache(m.name, &m.cacheEnabled)
+		if m.backend.CompareAndSwap(old, &next) {
+			return
+		}
 	}
+}
+
+// lookupResultKey 按后端快照隔离本次调用的批查结果；空字符串也代表已查过。
+type lookupResultKey struct {
+	backend *lookupBackend
+	group   string
+	key     string
+}
+
+func (m *lookupManager) lookup(ctx context.Context, group string, parts []string, key string, results map[lookupResultKey]string) (string, error) {
 	b := m.backend.Load()
 	if b == nil {
 		return "", fmt.Errorf("%s translator not registered", m.name)
+	}
+	if value, ok := results[lookupResultKey{b, group, key}]; ok {
+		return value, nil
+	}
+	cacheKey := cacheGroup([]string{group, key})
+	if v, ok := b.cache.get(cacheKey); ok {
+		return v, nil
 	}
 	v, err := b.one(ctx, parts, key)
 	if err != nil {
 		return "", err
 	}
-	m.cache.set(cacheKey, v)
+	b.cache.set(cacheKey, v)
 	return v, nil
 }
 
 // prefetch 批量预热：只查未命中缓存的 key；后端不支持批量则什么都不做（后续按单 key 走）
-func (m *lookupManager) prefetch(ctx context.Context, group string, parts []string, keys []string) error {
+func (m *lookupManager) prefetch(ctx context.Context, group string, parts []string, keys []string, results map[lookupResultKey]string) error {
 	b := m.backend.Load()
-	if b == nil || b.many == nil || !m.cache.enabled.Load() {
+	if b == nil || b.many == nil {
 		return nil
 	}
 	opt := NewBatchQueryOptimizer()
@@ -153,13 +199,19 @@ func (m *lookupManager) prefetch(ctx context.Context, group string, parts []stri
 			continue
 		}
 		seen[k] = struct{}{}
-		if _, ok := m.cache.get(group + ":" + k); ok {
+		resultKey := lookupResultKey{b, group, k}
+		if _, ok := results[resultKey]; ok {
 			continue
 		}
-		k := k // go 1.21：循环变量仍是共享的
+		cacheKey := cacheGroup([]string{group, k})
+		if v, ok := b.cache.get(cacheKey); ok {
+			results[resultKey] = v
+			continue
+		}
 		opt.AddQuery(group, k, func(v string, err error) {
 			if err == nil {
-				m.cache.set(group+":"+k, v)
+				results[resultKey] = v
+				b.cache.set(cacheKey, v)
 			}
 		})
 	}
@@ -184,7 +236,7 @@ func (m *lookupManager) preload(ctx context.Context, parts []string) (map[string
 		return nil, err
 	}
 	for k, v := range data {
-		m.cache.set(group+":"+k, v)
+		b.cache.set(cacheGroup([]string{group, k}), v)
 	}
 	return data, nil
 }
@@ -208,7 +260,7 @@ func (t *lookupTranslator) Translate(value any, fieldName string, tagValue strin
 }
 
 func (t *lookupTranslator) TranslateContext(ctx context.Context, value any, _ string, _ string) (string, error) {
-	return t.mgr.lookup(ctx, t.group, t.parts, fmt.Sprintf("%v", value))
+	return t.mgr.lookup(ctx, t.group, t.parts, fmt.Sprintf("%v", value), nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -236,14 +288,14 @@ func RegisterDBTranslator(translator DBTranslator) {
 			return bt.QueryBatch(ctx, p[0], p[1], p[2], keys)
 		}
 	}
-	defaultDBTranslatorManager.backend.Store(b)
+	defaultDBTranslatorManager.register(b)
 }
 
 // EnableDBCache 启用 / 禁用数据库翻译结果缓存
-func EnableDBCache(enabled bool) { defaultDBTranslatorManager.cache.enabled.Store(enabled) }
+func EnableDBCache(enabled bool) { defaultDBTranslatorManager.cacheEnabled.Store(enabled) }
 
-// ClearDBCache 清空数据库翻译结果缓存。若配置了 Config.Cache.CustomCache，会调用它的 Clear（Cache 接口无按前缀清理，三类共用时会一起清空）
-func ClearDBCache() { defaultDBTranslatorManager.cache.clear() }
+// ClearDBCache 使本类结果缓存失效，不清空共享 CustomCache；外部旧条目按其 TTL 回收。
+func ClearDBCache() { defaultDBTranslatorManager.clear() }
 
 func createDBTranslator(table, keyField, valueField string) Translator {
 	return newLookupTranslator(defaultDBTranslatorManager, table, keyField, valueField)
@@ -273,14 +325,14 @@ func dictTableBackend(translator interface {
 
 // RegisterDictTableTranslator 注册字典表翻译器（可选实现 DictTableContextTranslator / DictTableBatchTranslator / DictTableLoader）
 func RegisterDictTableTranslator(translator DictTableTranslator) {
-	defaultDictTableManager.backend.Store(dictTableBackend(translator))
+	defaultDictTableManager.register(dictTableBackend(translator))
 }
 
 // EnableDictTableCache 启用 / 禁用字典表翻译结果缓存
-func EnableDictTableCache(enabled bool) { defaultDictTableManager.cache.enabled.Store(enabled) }
+func EnableDictTableCache(enabled bool) { defaultDictTableManager.cacheEnabled.Store(enabled) }
 
-// ClearDictTableCache 清空字典表翻译结果缓存。若配置了 Config.Cache.CustomCache，会调用它的 Clear（Cache 接口无按前缀清理，三类共用时会一起清空）
-func ClearDictTableCache() { defaultDictTableManager.cache.clear() }
+// ClearDictTableCache 使本类结果缓存失效，不清空共享 CustomCache；外部旧条目按其 TTL 回收。
+func ClearDictTableCache() { defaultDictTableManager.clear() }
 
 func createDictTableTranslator(dictType string) Translator {
 	return newLookupTranslator(defaultDictTableManager, dictType)
@@ -288,14 +340,14 @@ func createDictTableTranslator(dictType string) Translator {
 
 // RegisterDictTableTwoTranslator 注册双表字典翻译器（可选实现 DictTableContextTranslator / DictTableBatchTranslator / DictTableLoader）
 func RegisterDictTableTwoTranslator(translator DictTableTwoTranslator) {
-	defaultDictTableTwoManager.backend.Store(dictTableBackend(translator))
+	defaultDictTableTwoManager.register(dictTableBackend(translator))
 }
 
 // EnableDictTableTwoCache 启用 / 禁用双表字典翻译结果缓存
-func EnableDictTableTwoCache(enabled bool) { defaultDictTableTwoManager.cache.enabled.Store(enabled) }
+func EnableDictTableTwoCache(enabled bool) { defaultDictTableTwoManager.cacheEnabled.Store(enabled) }
 
-// ClearDictTableTwoCache 清空双表字典翻译结果缓存。若配置了 Config.Cache.CustomCache，会调用它的 Clear（Cache 接口无按前缀清理，三类共用时会一起清空）
-func ClearDictTableTwoCache() { defaultDictTableTwoManager.cache.clear() }
+// ClearDictTableTwoCache 使本类结果缓存失效，不清空共享 CustomCache；外部旧条目按其 TTL 回收。
+func ClearDictTableTwoCache() { defaultDictTableTwoManager.clear() }
 
 func createDictTableTwoTranslator(dictTypeCode string) Translator {
 	return newLookupTranslator(defaultDictTableTwoManager, dictTypeCode)

@@ -197,18 +197,22 @@ func (c *RedisCache) Delete(key string) error {
 }
 
 func (c *RedisCache) Clear() error {
-    return c.client.FlushDB().Err()
+    // 共享 Redis 不提供全库清理，避免影响其他业务数据。
+    return fmt.Errorf("shared cache: Clear is disabled")
 }
 
 // 使用自定义缓存
 config := &dict.Config{
     Cache: dict.CacheConfig{
         Enabled:    true,
+        TTL:        300, // 回收 Clear*Cache / 后端重注册后不可达的旧命名空间
         CustomCache: &RedisCache{client: redisClient},
     },
 }
 dict.SetConfig(config)
 ```
+
+`ClearDBCache` / `ClearDictTableCache` / `ClearDictTableTwoCache` 仅切换对应结果缓存的命名空间，不调用此 `Clear`。外部旧条目由 TTL / 缓存自身淘汰回收；TTL 为 0 时不会自动回收。`Framework.ClearCache()` 仍直接调用自定义缓存的 `Clear`，上面的共享缓存示例会明确拒绝它。默认 DB 结果缓存读取 `SetConfig` 的全局配置，不是 `NewFramework(cfg)` 的实例配置。
 
 ### 5. 性能监控
 
@@ -345,4 +349,3 @@ dict-trans 框架提供了：
 3. **高自定义**：灵活配置、自定义缓存、自定义翻译器
 
 适用于各种规模的 Go 项目，从简单应用到大型分布式系统。
-

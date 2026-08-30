@@ -33,7 +33,7 @@ func (dm *DictManager) BatchTranslate(items any, parallel bool) error {
 // batchTranslateParallel 并行批量翻译
 // 任一 worker 出错即通知其他 worker 停止，返回第一个错误。
 // ponytail: 需要超时/取消时再加 BatchTranslateContext
-func (dm *DictManager) batchTranslateParallel(sliceValue reflect.Value, ctx context.Context) error {
+func (dm *DictManager) batchTranslateParallel(sliceValue reflect.Value, ctx context.Context, prefetched map[lookupResultKey]string) error {
 	length := sliceValue.Len()
 	var ctxDone <-chan struct{} // ctx 为 nil 时保持 nil channel，select 里永远不就绪
 	if ctx != nil {
@@ -57,7 +57,7 @@ func (dm *DictManager) batchTranslateParallel(sliceValue reflect.Value, ctx cont
 	// 避免两个 goroutine 同时写同一个字段。顶层元素本身不记（平铺 []*Row 不碰锁）——
 	// 同一指针作为顶层元素重复出现时会被并发翻译，调用方需自行去重（见 README 限制）。
 	// ponytail: 单把互斥锁，只在 mark 嵌套指针目标时持有；成为瓶颈再分片
-	shared := &walk{ctx: ctx, mu: &sync.Mutex{}}
+	shared := &walk{ctx: ctx, mu: &sync.Mutex{}, prefetched: prefetched}
 
 	// 每个 worker 处理一部分数据
 	chunkSize := (length + workerCount - 1) / workerCount

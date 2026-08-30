@@ -203,8 +203,10 @@ func TestCustomCacheUsedForDBResults(t *testing.T) {
 	if r.SexName != "男" || rc.set != 1 || rc.gets < 2 || atomic.LoadInt64(&be.single) != 1 {
 		t.Fatalf("CustomCache 未生效: name=%q set=%d gets=%d single=%d", r.SexName, rc.set, rc.gets, be.single)
 	}
-	if _, ok := rc.m["dictTable:sex:1"]; !ok {
-		t.Fatalf("CustomCache 里应有带前缀的 key，实际 %v", rc.m)
+	for key, value := range rc.m {
+		if !strings.HasPrefix(key, "dictTable:") || value != "男" {
+			t.Fatalf("CustomCache 应使用本类命名空间，实际 %v", rc.m)
+		}
 	}
 }
 

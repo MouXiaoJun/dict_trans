@@ -28,7 +28,7 @@ var builtinMaskFormats = map[string]MaskFormatter{
 func maskKeepBoth(head, tail int) MaskFormatter {
 	return func(s string) string {
 		r := []rune(s)
-		if len(r) <= head+tail {
+		if head >= len(r) || tail >= len(r)-head {
 			return strings.Repeat("*", len(r))
 		}
 		return string(r[:head]) + strings.Repeat("*", len(r)-head-tail) + string(r[len(r)-tail:])
@@ -141,9 +141,10 @@ func (dm *DictManager) Mask(v any) error {
 	}
 	elem := rv.Elem()
 	var errs []string
+	seen := &walk{}
 	switch elem.Kind() {
 	case reflect.Struct:
-		dm.maskStruct(elem, "", &errs)
+		dm.maskStruct(elem, "", &errs, seen)
 	case reflect.Slice, reflect.Array:
 		for i := 0; i < elem.Len(); i++ {
 			ev := elem.Index(i)
@@ -155,7 +156,7 @@ func (dm *DictManager) Mask(v any) error {
 				ev = ev.Elem()
 			}
 			if ev.IsValid() && ev.Kind() == reflect.Struct {
-				dm.maskStruct(ev, fmt.Sprintf("[%d].", i), &errs)
+				dm.maskStruct(ev, fmt.Sprintf("[%d].", i), &errs, seen)
 			}
 		}
 	default:
@@ -168,7 +169,10 @@ func (dm *DictManager) Mask(v any) error {
 }
 
 // maskStruct 递归脱敏结构体，path 用于错误消息。
-func (dm *DictManager) maskStruct(rv reflect.Value, path string, errs *[]string) {
+func (dm *DictManager) maskStruct(rv reflect.Value, path string, errs *[]string, seen *walk) {
+	if !seen.mark(rv) {
+		return
+	}
 	cfg := dm.getMaskConfig(rv.Type())
 	for _, me := range cfg.errs {
 		*errs = append(*errs, fmt.Sprintf("字段 %s: mask 格式 %q 未注册", me.field, me.name))
@@ -189,7 +193,7 @@ func (dm *DictManager) maskStruct(rv reflect.Value, path string, errs *[]string)
 		}
 		switch fc.nested {
 		case nestedStruct:
-			dm.maskStruct(fv, fieldName+".", errs)
+			dm.maskStruct(fv, fieldName+".", errs, seen)
 		case nestedPtr:
 			if fv.IsNil() {
 				continue
@@ -203,7 +207,7 @@ func (dm *DictManager) maskStruct(rv reflect.Value, path string, errs *[]string)
 				elem = elem.Elem()
 			}
 			if elem.IsValid() && elem.Kind() == reflect.Struct {
-				dm.maskStruct(elem, fieldName+".", errs)
+				dm.maskStruct(elem, fieldName+".", errs, seen)
 			}
 		case nestedSlice:
 			for i := 0; i < fv.Len(); i++ {
@@ -216,7 +220,7 @@ func (dm *DictManager) maskStruct(rv reflect.Value, path string, errs *[]string)
 					ev = ev.Elem()
 				}
 				if ev.IsValid() && ev.Kind() == reflect.Struct {
-					dm.maskStruct(ev, fmt.Sprintf("%s[%d].", fieldName, i), errs)
+					dm.maskStruct(ev, fmt.Sprintf("%s[%d].", fieldName, i), errs, seen)
 				}
 			}
 		}
@@ -301,12 +305,12 @@ func nestedKindOf(t reflect.Type) nestedKind {
 		return nestedStruct
 	}
 	if t.Kind() == reflect.Ptr || t.Kind() == reflect.Interface {
-		if t.Kind() == reflect.Interface && t.NumMethod() > 0 {
-			return nestedNone // 非空接口无法确定具体类型，不递归
+		if t.Kind() == reflect.Interface {
+			return nestedNone // 接口无法静态确定具体类型，不递归
 		}
 		et := t.Elem()
 		for et.Kind() == reflect.Ptr || et.Kind() == reflect.Interface {
-			if et.Kind() == reflect.Interface && et.NumMethod() > 0 {
+			if et.Kind() == reflect.Interface {
 				return nestedNone
 			}
 			et = et.Elem()
@@ -318,7 +322,7 @@ func nestedKindOf(t reflect.Type) nestedKind {
 	if t.Kind() == reflect.Slice || t.Kind() == reflect.Array {
 		et := t.Elem()
 		for et.Kind() == reflect.Ptr || et.Kind() == reflect.Interface {
-			if et.Kind() == reflect.Interface && et.NumMethod() > 0 {
+			if et.Kind() == reflect.Interface {
 				return nestedNone
 			}
 			et = et.Elem()

@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/MouXiaoJun/dict_trans.svg)](https://pkg.go.dev/github.com/MouXiaoJun/dict_trans)
 [![Go Version](https://img.shields.io/badge/go-1.21+-00ADD8?style=flat-square&logo=go)](https://golang.org)
-[![License](https://img.shields.io/badge/license-MulanPSL--2.0-green.svg?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](LICENSE)
 [![GitHub release](https://img.shields.io/github/release/MouXiaoJun/dict_trans.svg?style=flat-square)](https://github.com/MouXiaoJun/dict_trans/releases)
 [![Go Report Card](https://goreportcard.com/badge/github.com/MouXiaoJun/dict_trans?style=flat-square)](https://goreportcard.com/report/github.com/MouXiaoJun/dict_trans)
 
@@ -84,6 +84,8 @@ dict.RegisterMaskFormat("carplate", func(s string) string { /* custom */ })
 
 Built-in formats: `phone` (3+4), `idcard` (6+4), `bankcard` (4+4), `email` (first char of local part), `name` (first char), `address` (first 6), `password` / `*` (all), and generic `"n,m"` keep form. All are rune-safe for Chinese text. `mask:"-"` skips a field; non-string fields are skipped.
 
+Masking visits each typed struct object once per call, including cycles and shared children. Nil pointers are skipped; interface-typed fields (including `any` and `[]any` fields) are not dynamically traversed. Custom formats need not be idempotent. Do not mask the same object concurrently.
+
 ## Database-backed dictionaries
 
 ```go
@@ -112,7 +114,7 @@ err := dict.TranslateWith(&rows,
 
 Generic entrypoints move the pointer/slice checks to compile time: `dict.TranslateOf(&u)` (`*T`), `dict.BatchTranslateOf(items, true)` (`[]*T`).
 
-**No N+1.** For slices with at least `Config.Performance.BatchQueryThreshold` (default 10) elements, database-backed fields (`db`, `dictTable`, `dictTableTwo`) are collected in one pass and fetched with a single `IN (...)` query per dictionary group, warming the result cache before the translation pass. Backends opt in by implementing the optional interfaces:
+**Batch lookup.** For slices with at least `Config.Performance.BatchQueryThreshold` (default 10) elements, database-backed fields (`db`, `dictTable`, `dictTableTwo`) are collected in one pass and fetched through one batch call per backend/group with uncached keys. The number of SQL statements inside that call depends on the backend. Backends opt in by implementing the optional interfaces:
 
 | Backend | Optional interface | Enables |
 | --- | --- | --- |
@@ -122,7 +124,16 @@ Generic entrypoints move the pointer/slice checks to compile time: `dict.Transla
 
 `CreateDictTableTranslatorFromDB` / `CreateDictTableTwoTranslatorFromDB` already implement all of them (`QueryRowContext`, `IN` queries, full-dictionary load). A backend without batch support silently falls back to per-key lookups.
 
-**Result cache.** DB lookups are cached per kind (`EnableDBCache`, `ClearDBCache`, `EnableDictTableCache`, ...). If `Config.Cache.Enabled` and `Config.Cache.CustomCache` are set (e.g. a Redis adapter implementing `Cache`), results go there with `Config.Cache.TTL`, keyed `db:` / `dictTable:` / `dictTableTwo:` + group + key. Note that `Clear*Cache` calls `CustomCache.Clear()`, which clears the shared custom cache.
+Batch results, including missing keys and empty display values, are retained only for the current translation call, including parallel filling. Missing/empty values leave destination fields unchanged and are not stored as persistent negative cache entries, so later calls can see newly created data. This per-call record also works with result caching disabled or a small cache capacity. `WithoutPrefetch()` disables batching and preserves per-key fallback. Batch errors are returned without caching partial results.
+
+**Result cache.** The global configuration installed by `SetConfig` controls DB results, independently of a `Framework` instance's configuration. Results are cached per kind (`EnableDBCache`, `ClearDBCache`, `EnableDictTableCache`, ...):
+
+- Both `Config.Cache.Enabled` and the relevant `Enable*Cache` switch must be true for persistent cache reads/writes. Disabling bypasses caching; it does not invalidate existing entries. Use `Clear*Cache` when re-enabling must start fresh.
+- The default `MemoryCache` applies `Cache.TTL` (seconds; 0 means no expiration) and `Cache.MaxEntries` per kind (default 10000; <= 0 means unbounded). Changing TTL/capacity rebuilds that kind's local store on its next use. A supplied `CustomCache` receives TTL and controls its own capacity; setting `Cache.Type` alone does not connect Redis.
+- Registration replaces the backend and its result-cache namespace atomically. Already-running queries may return their old backend's result, but cannot populate the new backend's cache. Cache keys use unambiguous length-prefixed components and a private registration namespace; their representation is not a public API and entries are not shared across process lifetimes/registrations.
+- `ClearDBCache`, `ClearDictTableCache` and `ClearDictTableTwoCache` invalidate only their own namespace. They never call `CustomCache.Clear()` or delete application-owned/other-kind data. In external storage, obsolete namespace entries remain until that storage expires/evicts them: configure a positive TTL or an explicit reclamation policy. TTL 0 does **not** physically reclaim old external entries.
+
+Compatibility: existing custom-cache keys become cold after this key-format change. The separate `Framework.ClearCache()` API still delegates to its configured cache's `Clear`; do not use that operation on a shared cache whose `Clear` flushes all data.
 
 **Framework extras.** `NewFramework(cfg).Init()` preloads `cfg.Performance.PreloadDicts` through `DictTableLoader` (`fw.Preloaded(type, key)`), and `fw.GetMetrics()["translate"]` reports count / min / max / avg latency and error count for `fw.Translate`. `NewDictManager()` gives an isolated manager (own dictionaries, translators and config cache) for multi-tenant or test setups.
 
@@ -161,4 +172,4 @@ CI posts a `benchstat` comparison (base vs head) in every pull request's job sum
 
 ## License
 
-[Mulan PSL v2](LICENSE)
+[MIT](LICENSE)

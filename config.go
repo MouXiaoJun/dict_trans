@@ -39,7 +39,7 @@ type PerformanceConfig struct {
 
 // CacheConfig 缓存配置
 type CacheConfig struct {
-	// 启用缓存
+	// 启用结果缓存；还需对应 Enable*Cache 为 true。禁用不影响本次批查结果回填。
 	Enabled bool
 
 	// 缓存类型：memory, redis, custom
@@ -48,7 +48,7 @@ type CacheConfig struct {
 	// 缓存过期时间（秒），0表示不过期
 	TTL int
 
-	// 最大缓存条目数
+	// 默认内存结果缓存每类的最大条目数；<=0 不限制。CustomCache 自行控制容量。
 	MaxEntries int
 
 	// 自定义缓存实现
