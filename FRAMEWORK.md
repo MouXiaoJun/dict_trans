@@ -1,6 +1,8 @@
 # dict-trans 高性能翻译框架
 
-dict-trans 是一个**高效率、高扩展性、高自定义**的 Go 语言翻译框架。
+本页描述现有 Framework 包装层。维护范围不包含补齐历史扩展设想；以 [README 的当前执行边界](README_zh.md#框架模式高级功能) 为准。
+
+注意：`MaxConcurrency`、`DBPoolSize`、`BatchOptions.Concurrency` 目前不控制 worker/数据库连接池；`TranslateOptions` 仅 `Strategy` 被 `Framework.Translate` 消费。`Plugin.Execute` 和已注册工厂不自动调用，中间件是调用级钩子（字段信息不会自动填充）。下方接口示意不能视为这些能力已接通。
 
 ## 🚀 核心特性
 
@@ -17,7 +19,7 @@ dict-trans 是一个**高效率、高扩展性、高自定义**的 Go 语言翻�
 - ✅ **中间件系统**：支持翻译前后处理（日志、审计、限流等）
 - ✅ **插件机制**：可插拔的插件系统
 - ✅ **策略模式**：支持多种翻译策略切换
-- ✅ **工厂模式**：自定义翻译器工厂
+- **工厂接口**：可注册保存，但未接入自动翻译流程
 - ✅ **解耦设计**：各组件独立，易于扩展
 
 ### 3. 高自定义 (High Customization)
@@ -80,8 +82,6 @@ config := &dict.Config{
     Performance: dict.PerformanceConfig{
         BatchQueryThreshold: 10,  // 批量查询阈值
         ParallelThreshold:   100, // 并行处理阈值
-        MaxConcurrency:       20,  // 最大并发数
-        PreloadDicts:         []string{"sex", "status"}, // 预加载字典（Init 时通过已注册的字典表翻译器的 DictTableLoader 整表加载；CreateDictTableTranslatorFromDB 已实现）
     },
     Cache: dict.CacheConfig{
         Enabled:   true,
@@ -94,12 +94,14 @@ config := &dict.Config{
 // 设置配置
 dict.SetConfig(config)
 
-// 获取框架实例
-framework := dict.GetFramework()
+// 创建实例：GetFramework 在包初始化时创建，不随 SetConfig 重建
+framework := dict.NewFramework(config)
+framework.RegisterDict("sex", map[string]string{"1": "男", "2": "女"})
+if err := framework.Init(); err != nil { panic(err) }
 
 // 使用框架翻译
 user := User{Sex: "1"}
-framework.Translate(&user)
+if err := framework.Translate(&user); err != nil { panic(err) }
 ```
 
 ## 🔧 高级功能
@@ -219,8 +221,8 @@ dict.SetConfig(config)
 ```go
 framework := dict.GetFramework()
 
-// 执行翻译操作
-dict.Translate(&user)
+// 只有经本实例执行的操作会计入其指标；字典也须注册到本实例
+framework.Translate(&user)
 
 // 获取性能指标
 metrics := framework.GetMetrics()
@@ -237,21 +239,15 @@ for name, metric := range metrics {
 options := &dict.BatchOptions{
     Parallel:   true,    // 并行处理
     BatchQuery: true,    // 批量查询优化：切片 >= BatchQueryThreshold 时先收集 DB 类字段的 key，每组一次 IN 查询预热缓存（后端需实现 *BatchTranslator 可选接口）
-    Concurrency: 20,     // 并发数
 }
 
 items := make([]Item, 1000)
 dict.TranslateBatch(&items, options)
 ```
 
-## 📊 性能对比
+## 📊 性能验证
 
-| 场景 | 传统方式 | dict-trans 框架 |
-|------|---------|----------------|
-| 单条翻译 | 1ms | 0.1ms (缓存) |
-| 100条翻译 | 100ms | 5ms (批量优化) |
-| 1000条翻译 | 1000ms | 50ms (并行+批量) |
-| 数据库查询 | N次查询 | 1次批量查询 |
+使用仓库中的可运行基准，见 [README](README.md#performance)。数据库语句数由具体后端实现决定，一次批查接口调用不等于一次 SQL；不承诺固定加速比。
 
 ## 🎨 最佳实践
 
@@ -263,7 +259,6 @@ config := &dict.Config{
         // 根据数据量调整阈值
         BatchQueryThreshold: 10,  // 小批量：10
         ParallelThreshold:   100,  // 大批量：100
-        MaxConcurrency:       20,   // 根据CPU核心数调整
         
         // 预加载常用字典
         PreloadDicts: []string{"sex", "status", "priority"},
@@ -345,7 +340,7 @@ for name, metric := range metrics {
 dict-trans 框架提供了：
 
 1. **高效率**：批量查询、预加载、智能缓存、并行处理
-2. **高扩展性**：中间件、插件、策略、工厂模式
+2. **当前扩展点**：调用级中间件、插件初始化、显式策略；工厂及其他预留选项不自动参与翻译
 3. **高自定义**：灵活配置、自定义缓存、自定义翻译器
 
-适用于各种规模的 Go 项目，从简单应用到大型分布式系统。
+选用前核对本页开头的执行边界；本库不提供通用分布式框架保证。

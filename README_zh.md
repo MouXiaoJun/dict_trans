@@ -1,5 +1,7 @@
 # dict-trans
 
+维护边界：保持已发布 API，继续修复缺陷、安全问题和 Go 兼容性，不主动扩展 API。
+
 [English](README.md)
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/MouXiaoJun/dict_trans.svg)](https://pkg.go.dev/github.com/MouXiaoJun/dict_trans)
@@ -429,6 +431,8 @@ dict.BatchTranslate(&items, true)
 
 ## 选项、ctx 与批量
 
+内置 SQL 适配器使用 `?` 占位符（见 MySQL 示例），不自动适配所有数据库方言。表名/列名必须是可信应用配置，不能来自请求输入；其他后端实现已有翻译器接口即可。`sql.DB` 的生命周期由调用方负责。
+
 `TranslateWith` 接受函数式选项，`Translate` / `BatchTranslate` 是它的薄封装：
 
 ```go
@@ -441,7 +445,7 @@ err := dict.TranslateWith(&rows,
 
 泛型入口把指针/切片检查提前到编译期：`dict.TranslateOf(&user)`（`*T`）、`dict.BatchTranslateOf(items, true)`（`[]*T`）。反射核心不能泛型化（struct tag 只能运行时读）。
 
-**没有 N+1。** 切片元素数 >= `Config.Performance.BatchQueryThreshold`（默认 10）时，先走一遍收集所有 DB 类字段（`db` / `dictTable` / `dictTableTwo`）的 key，每个字典分组一次 `IN (...)` 查询预热结果缓存，再做翻译。后端通过实现可选接口开启这些能力：
+**批量查询。** 切片元素数 >= `Config.Performance.BatchQueryThreshold`（默认 10）时，先收集 DB 类字段（`db` / `dictTable` / `dictTableTwo`）的 key，每个有未命中 key 的后端/分组调用一次批查，再做翻译。实际 SQL 条数由后端决定；没有批查接口时仍逐 key 回退，不保证消除所有 N+1。后端通过实现可选接口开启这些能力：
 
 | 后端 | 可选接口 | 开启 |
 | --- | --- | --- |
@@ -451,7 +455,14 @@ err := dict.TranslateWith(&rows,
 
 `CreateDictTableTranslatorFromDB` / `CreateDictTableTwoTranslatorFromDB` 的返回值已全部实现（`QueryRowContext`、`IN` 查询、整表加载）。后端没实现批量接口时静默退回单 key 查询。
 
-**结果缓存。** DB 查询结果按类缓存（`EnableDBCache` / `ClearDBCache` / `EnableDictTableCache` …）。若 `Config.Cache.Enabled` 且设置了 `Config.Cache.CustomCache`（如实现了 `Cache` 接口的 Redis 适配器），结果写到那里，TTL 取 `Config.Cache.TTL`，key 前缀 `db:` / `dictTable:` / `dictTableTwo:`。注意 `Clear*Cache` 会调用 `CustomCache.Clear()`，即清掉共享的自定义缓存。
+批查结果（含未找到和空显示值）只在本次翻译调用内保留，并行回填同样复用。未找到/空值不改目标字段，也不持久化为负缓存，后续调用可看到新数据；关闭缓存或容量较小时仍成立。`WithoutPrefetch()` 禁用批查；批查错误直接返回，不缓存部分结果。
+
+**结果缓存。** DB 结果使用 `SetConfig` 安装的全局配置，与 `Framework` 实例配置独立。`Config.Cache.Enabled` 和对应 `Enable*Cache` 必须同时启用；关闭仅绕过读写，不删除旧缓存，重新启用需全新数据时调用 `Clear*Cache`。
+
+- 默认 `MemoryCache` 使用 `Cache.TTL`（秒，0 表示不过期）和每类 `Cache.MaxEntries`（默认 10000，<= 0 表示无上限）；改变 TTL/容量后，下次使用会重建本类内存缓存。`CustomCache` 接收 TTL，容量由其自己控制；只设置 `Cache.Type` 不会连接 Redis。
+- 注册后端会原子替换后端与其缓存命名空间。进行中的旧查询可返回旧结果，但不能写入新后端的缓存。缓存键编码和注册命名空间是内部实现，不跨注册/进程共享。
+- `ClearDBCache` / `ClearDictTableCache` / `ClearDictTableTwoCache` 只使本类命名空间失效，**不调用 `CustomCache.Clear()`**，不删除应用或其他类的数据。外部存储旧条目依靠其 TTL/淘汰回收；TTL 0 不会物理回收旧条目，应配置正 TTL 或回收策略。
+- 独立的 `Framework.ClearCache()` 仍会调用其配置缓存的 `Clear()`；不能在会清空全库的共享缓存上把两种 API 混用。
 
 **框架层。** `NewFramework(cfg).Init()` 按 `cfg.Performance.PreloadDicts` 通过 `DictTableLoader` 预加载（`fw.Preloaded(type, key)` 读取）；`fw.GetMetrics()["translate"]` 给出 `fw.Translate` 的次数 / 最小 / 最大 / 平均耗时与错误数。`NewDictManager()` 得到一个独立管理器（自己的字典、翻译器与配置缓存），适合多租户或测试隔离。
 
@@ -492,6 +503,7 @@ CI 在每个 PR 的 job summary 里贴 `benchstat` 对比（base vs head）；`g
 - 翻译是尽力而为：字典不存在、目标字段不存在、目标不是 string 都会静默跳过，不报错；错误只来自翻译器本身（例如数据库查询失败）。
 - 并行批量翻译在第一个翻译器错误后停止其余 worker 并返回该错误，已翻译的元素保留结果。
 - 源字段支持 string 与整数类型，目标字段必须是 string。
+- 注册的字典 map 和配置对象在使用期间不得被外部修改；并发调用不能写同一个输出对象，自定义翻译器与缓存也须自行保证并发安全。
 - `WithParallel` / `BatchTranslate(..., true)`：被多个元素共享的**嵌套**指针目标只翻译一次（共享 visited 集）；但**同一指针作为顶层元素重复出现**时会被不同 worker 并发翻译，请先去重再并行。并行对 I/O 型翻译器（DB 查询）划算，纯内存字典通常顺序更快。
 
 ## Struct Tags 说明
@@ -533,12 +545,14 @@ go get github.com/MouXiaoJun/dict_trans
 
 ## 框架模式（高级功能）
 
-dict-trans 不仅是一个简单的翻译组件，更是一个完整的**高性能翻译框架**。
+`Framework` 封装独立字典管理器、预加载、策略分发和指标。它不是所有历史扩展接口都已接通的通用框架。
+
+当前 `MaxConcurrency`、`DBPoolSize`、`BatchOptions.Concurrency` 和 `TranslateOptions` 中除 `Framework.Translate` 的 `Strategy` 外的字段不控制翻译流程；worker 最多 10 个。`ParallelThreshold` 用于 `TranslateBatch`，`WithParallel`/`BatchTranslate` 使用已说明的 10 元素阈值。插件由 `Framework.Init` 初始化，但 `Plugin.Execute` 与已注册工厂不自动调用。中间件只在 `TranslateWithOptions`（包括 Framework 默认路径）调用级执行，不是自动填充字段信息的逐字段事件；普通 `Translate` 不运行中间件。
 
 ### 核心优势
 
 - 🚀 **高性能**：批量查询优化、预加载、智能缓存、并行处理
-- 🔌 **高扩展性**：中间件、插件、策略、工厂模式
+- 🔌 **已有扩展点**：调用级中间件、插件初始化、显式策略分发；其他声明保留兼容，不代表自动接入
 - 🎨 **高自定义**：灵活配置、自定义缓存、自定义翻译器
 
 ### 快速开始
@@ -549,7 +563,6 @@ config := &dict.Config{
     Performance: dict.PerformanceConfig{
         BatchQueryThreshold: 10,
         ParallelThreshold:   100,
-        PreloadDicts:        []string{"sex", "status"},
     },
     Cache: dict.CacheConfig{
         Enabled:   true,
@@ -559,9 +572,11 @@ config := &dict.Config{
 }
 dict.SetConfig(config)
 
-// 2. 使用框架
-framework := dict.GetFramework()
-framework.Translate(&user)
+// 2. 创建实例并注册到该实例；GetFramework 不会随 SetConfig 重建
+framework := dict.NewFramework(config)
+framework.RegisterDict("sex", map[string]string{"1": "男", "2": "女"})
+if err := framework.Init(); err != nil { panic(err) }
+if err := framework.Translate(&user); err != nil { panic(err) }
 ```
 
 ### 详细文档

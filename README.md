@@ -1,5 +1,7 @@
 # dict-trans
 
+Maintenance scope: preserve the published API; focus on bug fixes, security and Go compatibility, with no planned API expansion.
+
 [![Go Reference](https://pkg.go.dev/badge/github.com/MouXiaoJun/dict_trans.svg)](https://pkg.go.dev/github.com/MouXiaoJun/dict_trans)
 [![Go Version](https://img.shields.io/badge/go-1.21+-00ADD8?style=flat-square&logo=go)](https://golang.org)
 [![License](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](LICENSE)
@@ -100,6 +102,8 @@ dict.RegisterDictTableTwoTranslator(dict.CreateDictTableTwoTranslatorFromDB(db, 
 
 Query results are cached in memory (`EnableDictTableCache`, `ClearDictTableCache`, and the `DB*` equivalents). See [examples/](examples/) for runnable programs.
 
+The built-in SQL adapters use `?` placeholders, as in the MySQL examples; they do not rewrite SQL for every database dialect. Table/column names are trusted application configuration, not request input. For another backend, implement the existing translator interfaces. The caller owns the `sql.DB` lifecycle.
+
 ## Options, context and batching
 
 `TranslateWith` takes functional options; `Translate` / `BatchTranslate` are thin wrappers over it.
@@ -164,11 +168,14 @@ CI posts a `benchstat` comparison (base vs head) in every pull request's job sum
 - Cyclic structures (self-referencing pointers, parent/child links) are handled: each pointer target is translated once per `Translate` call.
 - Translation is best-effort: a missing dictionary, missing target field or non-string target is silently skipped, not an error. Errors come only from translators (e.g. database failures).
 - Source fields must be `string` or integer kinds; target fields must be `string`.
+- Do not mutate registered dictionary maps or configuration objects while they are in use. Concurrent calls must not write the same output object; user-supplied translators and caches must provide their own concurrency safety.
 - `WithParallel` / `BatchTranslate(..., true)`: nested pointer targets shared by several elements are translated exactly once (a shared visited set), but the *same pointer appearing several times as a top-level element* is translated by whichever worker gets it — de-duplicate such slices before translating in parallel. Parallel mode pays off for I/O-bound translators (database lookups); for in-memory dictionaries the sequential path is usually faster.
 
 ## Framework mode
 
-`Framework` bundles a `DictManager` with config, middleware and plugin hooks (`NewFramework`, `GetFramework`). See [FRAMEWORK.md](FRAMEWORK.md).
+`Framework` bundles an isolated `DictManager`, preload, strategy dispatch and metrics (`NewFramework`, `GetFramework`). Register dictionaries on that instance. `GetFramework` is created at package initialization; `SetConfig` does not rebuild it.
+
+Compatibility fields are not all wired into execution: `MaxConcurrency`, `DBPoolSize`, `BatchOptions.Concurrency`, and `TranslateOptions` other than `Framework.Translate`'s `Strategy` currently do not control translation. The worker pool has at most 10 workers; `ParallelThreshold` applies to `TranslateBatch`, while `WithParallel`/`BatchTranslate` use the documented 10-element threshold. Plugins are initialized by `Framework.Init`, but `Plugin.Execute` and registered translator factories are not invoked automatically. Middleware runs only through `TranslateWithOptions` (including the default Framework path), not plain `Translate`; it is call-level, not a populated field-by-field event stream. These compatibility hooks are not new feature commitments. See [FRAMEWORK.md](FRAMEWORK.md).
 
 ## License
 
