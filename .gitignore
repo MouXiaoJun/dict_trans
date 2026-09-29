@@ -55,3 +55,6 @@ coverage.html
 examples/**/main
 examples/**/*.exe
 
+
+# Go build cache
+.gocache/
